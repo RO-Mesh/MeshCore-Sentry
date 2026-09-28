@@ -74,11 +74,9 @@ jobs:
     outputs:
       skip: ${{ steps.version.outputs.skip }}
       branch: ${{ steps.version.outputs.branch }}
-      short_sha: ${{ steps.version.outputs.short_sha }}
       release_tag: ${{ steps.version.outputs.release_tag }}
       release_title: ${{ steps.version.outputs.release_title }}
       firmware_version: ${{ steps.version.outputs.firmware_version }}
-      base_line: ${{ steps.version.outputs.base_line }}
       changes_section: ${{ steps.version.outputs.changes_section }}
     steps:
 
@@ -149,13 +147,6 @@ jobs:
             DISPLAY_VERSION="${UPSTREAM_VERSION}-dev.${N}"
             RELEASE_TITLE="Filter Firmware ${DISPLAY_VERSION}"
             FIRMWARE_VERSION="${UPSTREAM_VERSION}-dev.${N}-filter-${SHORT_SHA}"
-          fi
-
-          # upstream base link for the release body
-          if [ "$UPSTREAM_VERSION" = untagged ]; then
-            BASE_LINE="untagged"
-          else
-            BASE_LINE="[${UPSTREAM_VERSION}](https://github.com/meshcore-dev/MeshCore/releases/tag/repeater-${UPSTREAM_VERSION})"
           fi
 
           # ---- gate: should this channel build at all? ----
@@ -249,11 +240,9 @@ jobs:
 
           echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "release_title=$RELEASE_TITLE" >> "$GITHUB_OUTPUT"
           echo "firmware_version=$FIRMWARE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "base_line=$BASE_LINE" >> "$GITHUB_OUTPUT"
           {
             echo "changes_section<<CHANGES_EOF"
             cat "$CHANGES_FILE"
@@ -370,12 +359,6 @@ jobs:
           prerelease: ${{ inputs.channel != 'stable' }}
           make_latest: ${{ inputs.channel == 'stable' && 'true' || 'false' }}
           generate_release_notes: true
-          body: |
-            Built from `${{ needs.version.outputs.branch }}` @ ${{ needs.version.outputs.short_sha }}.
-
-            Upstream base: ${{ needs.version.outputs.base_line }} (meshcore-dev/MeshCore).
-            Targets: ${{ join(fromJSON(needs.validate-targets.outputs.targets), ', ') }}
-
-            ${{ needs.version.outputs.changes_section }}
+          body: ${{ needs.version.outputs.changes_section }}
           files: out/*
           target_commitish: ${{ needs.version.outputs.branch }}
