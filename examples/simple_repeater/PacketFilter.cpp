@@ -3,6 +3,7 @@
 
 #include "PacketFilter.h"
 #include "CliUtil.h"
+#include <inttypes.h>
 #include <helpers/TxtDataHelpers.h>
 
 static int hexVal(char c) {
@@ -58,6 +59,7 @@ FilterRules::FilterRules() {
   limiter_drops = 0;
   budget_aborts = 0;
   air_saved_ms = 0;
+  air_evaluated_ms = 0;
   content_verdict.pkt = NULL;
   enabled = true;
   dirty = false;
@@ -93,6 +95,7 @@ void FilterRules::resetStats() {
   limiter_drops = 0;
   budget_aborts = 0;
   air_saved_ms = 0;
+  air_evaluated_ms = 0;
   for (int i = 0; i < num_rules; i++) {
     rules[i].hits = 0;
     rules[i].air_ms = 0;
@@ -438,10 +441,12 @@ uint8_t FilterRules::checkPacket(const mesh::Packet* pkt, uint32_t now_millis, c
     uint8_t hash[MAX_HASH_SIZE];
     pkt->calculatePacketHash(hash);
     if (memcmp(hash, content_verdict.hash, MAX_HASH_SIZE) == 0) {
+      if (content_verdict.verdict != FILTER_ACT_DROP) air_evaluated_ms += est_air_ms;
       return content_verdict.verdict;
     }
   }
 
+  air_evaluated_ms += est_air_ms;
   uint8_t payload_type = pkt->getPayloadType();
   uint8_t action = FILTER_ACT_ALLOW;
   for (int i = 0; i < num_rules; i++) {
@@ -545,6 +550,9 @@ uint8_t FilterRules::checkContent(mesh::Packet* pkt, uint8_t type, const mesh::G
     if (r->text[0] && (!parsed || !regexMatches(r->text, text))) continue;
     if (decideMatch(r, pkt, millis(), est_air_ms, verdict)) break;   // first match wins
   }
+
+  // Content drops never reach the forwarding hook; passes are counted in checkPacket().
+  if (verdict == FILTER_ACT_DROP) air_evaluated_ms += est_air_ms;
 
   // stash the verdict (allow included) for checkPacket(); a drop verdict
   // lingers (core marks the packet DoNotRetransmit and never calls
@@ -1104,9 +1112,9 @@ static void cliStats(FilterRules& filter, char* reply) {
   int remain = CLI_REPLY_MAX;
   // globals first, per-rule hits last: if the reply truncates, hits detail
   // (recoverable via `get N`) is sacrificed before the summary counters
-  radd(&out, &remain, "lim:%lu abort:%lu air:%lu; hits:",
+  radd(&out, &remain, "lim:%lu abort:%lu air:%" PRIu64 ":%u%%; hits:",
        (unsigned long)filter.getLimiterDrops(), (unsigned long)filter.getBudgetAborts(),
-       (unsigned long)filter.getAirSavedMs());
+       filter.getAirSavedMs(), filter.getAirSavedPercent());
   for (int i = 0; i < filter.getNumRules(); i++) {
     radd(&out, &remain, " %d:%lu", i, (unsigned long)filter.getRule(i)->hits);
   }
