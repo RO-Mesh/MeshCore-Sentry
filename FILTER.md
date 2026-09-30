@@ -214,7 +214,7 @@ admin (see [Managing the repeater remotely](#managing-the-repeater-remotely)).
 | `filter ratelimit` | Show the advert ratelimit window and cache usage |
 | `filter ratelimit advert <hours>` | Set the window (0–720 h; 0 = off) |
 | `filter ratelimit clear` | Empty the advert cache |
-| `filter stats` | Per-rule hit counters, limiter/abort counters, and total saved airtime (see below) |
+| `filter stats` | Per-rule hit counters, limiter/abort counters, and total saved airtime with percentage (see below) |
 | anything else | Usage line listing the commands |
 
 Notes:
@@ -646,8 +646,8 @@ Two things to remember:
   drop rule: a misplaced early probe silently disarms later drop rules, since
   the earlier rule matches first and the drop never fires.
 
-The probe's worth is also visible in **RF terms**: `filter stats` ends with
-`air:<ms>` — the estimated time-on-air the packets dropped so far would
+The probe's worth is also visible in **RF terms**: `filter stats` includes
+`air:<ms>:<percent>%` — the estimated time-on-air the packets dropped so far would
 have consumed on retransmit (rule drops and rate-limiter drops; the same
 estimate the repeater itself bills airtime with). `filter get <idx>` shows the
 per-rule share as `air=<ms>`. A shadow `forward` probe itself bills nothing
@@ -656,10 +656,18 @@ same hits start accumulating the estimate, which is usually the number that
 matters on a shared channel:
 
 ```text
-filter stats           # e.g. ... limiter:118 aborted:0; air:214500
+filter stats           # e.g. lim:118 abort:0 air:214500:36%; hits: 0:42
 ```
 
-All airtime counters are RAM-only and reset on reboot, like every counter.
+The percentage is saved airtime divided by total estimated airtime evaluated
+by the enabled filter, rounded to the nearest whole percent. It includes rule
+and advert-limiter drops and is airtime-weighted, not packet-weighted. With no
+evaluated airtime it shows `0%`. It measures the filter's estimated savings,
+not actual transmitted airtime or channel utilization: packets allowed by the
+filter may still be blocked by other forwarding checks.
+
+All airtime counters are RAM-only and reset on reboot or a statistics reset,
+like every counter.
 
 ## Managing the repeater remotely
 

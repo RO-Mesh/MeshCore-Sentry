@@ -161,8 +161,8 @@ class FilterRules {
   uint16_t ratelimit_hours;   // per-node advert repeat window; 0 = off
   uint32_t limiter_drops;     // adverts dropped by the rate limiter
   uint32_t budget_aborts;     // regex evaluations aborted on step-budget exhaustion
-  uint32_t air_saved_ms;      // estimated TX airtime (ms) not spent relaying
-                              // dropped packets (rule + limiter drops); RAM-only
+  uint64_t air_saved_ms;      // estimated TX airtime (ms) saved by rule + limiter drops
+  uint64_t air_evaluated_ms;  // estimated TX airtime (ms) evaluated; both counters RAM-only
   struct {                    // verdict stashed by checkContent() for the packet
     const mesh::Packet* pkt;  // currently being relayed; consumed by checkPacket()
     uint8_t hash[MAX_HASH_SIZE];  // pointer + content hash guard against pool reuse
@@ -231,7 +231,11 @@ public:
   void markDirty() { dirty = true; dirty_since = millis(); }
   uint32_t getLimiterDrops() const { return limiter_drops; }
   uint32_t getBudgetAborts() const { return budget_aborts; }
-  uint32_t getAirSavedMs() const { return air_saved_ms; }   // airtime not relayed (drops)
+  uint64_t getAirSavedMs() const { return air_saved_ms; }   // airtime not relayed (drops)
+  uint64_t getAirEvaluatedMs() const { return air_evaluated_ms; }
+  unsigned getAirSavedPercent() const {
+    return air_evaluated_ms ? (air_saved_ms * 100 + air_evaluated_ms / 2) / air_evaluated_ms : 0;
+  }
   void resetStats();
 
   // persistence

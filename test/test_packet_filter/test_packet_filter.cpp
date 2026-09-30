@@ -1702,6 +1702,8 @@ TEST_F(FilterTest, ThrottleOnPacketRulesViaCheckPacket) {
 // UNIT TESTS: saved-airtime telemetry (air)
 // ============================================================
 
+#include "../../examples/simple_repeater/CliUtil.h"
+
 // Native tests for the airtime counter: DROP decisions bill the caller-
 // supplied estimated time-on-air, forward/allow verdicts and limiter passes
 // do not, and the counters are RAM-only.
@@ -1767,6 +1769,8 @@ TEST_F(FilterTest, AirSavedNotBilledForForwardAllowLimiterPass) {
   mesh::Packet again = makeAdvert(AIR_KEY);
   ASSERT_EQ(filter.checkPacket(&again, 0, nullptr, EST_AIR), FILTER_ACT_DROP);
   EXPECT_EQ(filter.getAirSavedMs(), EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 4 * EST_AIR);
+  EXPECT_EQ(filter.getAirSavedPercent(), 25u);
 
   // once the window expires the same origin passes unbilled
   mesh::Packet expired = makeAdvert(AIR_KEY);
@@ -1790,14 +1794,102 @@ TEST_F(FilterTest, AirSavedRamOnly) {
   restored.begin(&fs);
   ASSERT_EQ(restored.getNumRules(), 1);
   EXPECT_EQ(restored.getAirSavedMs(), 0u);
+  EXPECT_EQ(restored.getAirEvaluatedMs(), 0u);
+  EXPECT_EQ(restored.getAirSavedPercent(), 0u);
   EXPECT_EQ(restored.getRule(0)->air_ms, 0u);
+}
+
+TEST_F(FilterTest, AirSavedPercentageWeightsAirtimeAndRounds) {
+  EXPECT_EQ(filter.getAirSavedPercent(), 0u);
+  EXPECT_NE(cli(filter, "stats").find("air:0:0%;"), std::string::npos);
+  mesh::Packet adv = makeAdvert(AIR_KEY);
+  filter.checkPacket(&adv, 0, nullptr, 1800);
+  EXPECT_EQ(filter.getAirSavedPercent(), 0u);
+  expectOk(filter, "add type=advert");
+  filter.checkPacket(&adv, 0, nullptr, 1000);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 2800u);
+  EXPECT_EQ(filter.getAirSavedPercent(), 36u);
+  EXPECT_NE(cli(filter, "stats").find("air:1000:36%;"), std::string::npos);
+  filter.checkPacket(&adv, 0, nullptr, 0);
+  EXPECT_EQ(filter.getAirSavedPercent(), 36u);
+  filter.setEnabled(false);
+  filter.checkPacket(&adv, 0, nullptr, 1000);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 2800u);
+  filter.resetStats();
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 0u);
+  EXPECT_EQ(filter.getAirSavedPercent(), 0u);
+}
+
+TEST_F(FilterTest, AirSavedPercentageUsesWideCounters) {
+  mesh::Packet adv = makeAdvert(AIR_KEY);
+  filter.checkPacket(&adv, 0, nullptr, UINT32_MAX);
+  expectOk(filter, "add type=advert");
+  filter.checkPacket(&adv, 0, nullptr, UINT32_MAX);
+  filter.checkPacket(&adv, 0, nullptr, UINT32_MAX);
+  EXPECT_EQ(filter.getAirSavedMs(), uint64_t(UINT32_MAX) * 2);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), uint64_t(UINT32_MAX) * 3);
+  EXPECT_EQ(filter.getAirSavedPercent(), 67u);
+  EXPECT_NE(cli(filter, "stats").find("air:8589934590:67%;"), std::string::npos);
+}
+
+TEST_F(FilterTest, AirSavedPercentageCountsContentOnce) {
+  auto pkt = makePacket(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT);
+  mesh::GroupChannel channel = {};
+  filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, channel, nullptr, 0, nullptr, EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 0u);
+  filter.checkPacket(&pkt, 0, nullptr, EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), EST_AIR);
+  expectOk(filter, "add action=forward");
+  filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, channel, nullptr, 0, nullptr, EST_AIR);
+  filter.checkPacket(&pkt, 0, nullptr, EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 2 * EST_AIR);
+  filter.clearRules();
+  expectOk(filter, "add");
+  filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, channel, nullptr, 0, nullptr, EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 3 * EST_AIR);
+  filter.checkPacket(&pkt, 0, nullptr, EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 3 * EST_AIR);
+  EXPECT_EQ(filter.getAirSavedPercent(), 33u);
+  filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, channel, nullptr, 0, nullptr, EST_AIR);
+  filter.resetStats();
+  filter.checkPacket(&pkt, 0, nullptr, EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 0u);
+}
+
+TEST_F(FilterTest, AirSavedPercentageIgnoresStaleContentVerdicts) {
+  auto pkt = makePacket(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT, 1);
+  mesh::GroupChannel channel = {};
+  expectOk(filter, "add");
+  filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, channel, nullptr, 0, nullptr, EST_AIR);
+  pkt.payload[0] ^= 1;   // same buffer, different content
+  filter.checkPacket(&pkt, 0, nullptr, EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 2 * EST_AIR);
+  filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, channel, nullptr, 0, nullptr, EST_AIR);
+  auto other = pkt;   // same content, different buffer
+  filter.checkPacket(&other, 0, nullptr, EST_AIR);
+  EXPECT_EQ(filter.getAirEvaluatedMs(), 4 * EST_AIR);
+  EXPECT_EQ(filter.getAirSavedPercent(), 100u);
+}
+
+TEST_F(FilterTest, AirSavedPercentageSummarySurvivesHitTruncation) {
+  for (int i = 0; i < FILTER_MAX_RULES; i++) expectOk(filter, "add");
+  mesh::Packet adv = makeAdvert(AIR_KEY);
+  filter.checkPacket(&adv, 0, nullptr, UINT32_MAX);
+  filter.checkPacket(&adv, 0, nullptr, UINT32_MAX);
+  for (int i = 0; i < filter.getNumRules(); i++) filter.getRule(i)->hits = UINT32_MAX;
+  char reply[CLI_REPLY_MAX + 1] = {};
+  reply[CLI_REPLY_MAX] = '!';
+  filterCLI(filter, "stats", reply, nullptr);
+  EXPECT_EQ(reply[CLI_REPLY_MAX], '!');
+  EXPECT_LT(strlen(reply), size_t(CLI_REPLY_MAX));
+  EXPECT_NE(std::string(reply).find("air:8589934590:100%; hits:"), std::string::npos);
 }
 
 TEST_F(FilterTest, AirSavedShownInCli) {
   expectOk(filter, "add type=advert");
   mesh::Packet adv = makeAdvert(AIR_KEY);
   filter.checkPacket(&adv, 0, nullptr, EST_AIR);
-  EXPECT_NE(cli(filter, "stats").find(" air:337;"), std::string::npos);
+  EXPECT_NE(cli(filter, "stats").find(" air:337:100%;"), std::string::npos);
   EXPECT_NE(cli(filter, "get 0").find(" air=337"), std::string::npos);
 }
 
@@ -2146,7 +2238,7 @@ TEST_F(FilterTest, ListAndStatsOutput) {
   EXPECT_EQ(list.find("on 1/16: 0eD"), 0);   // enabled + Drop digest line
 
   std::string stats = cli(filter, "stats");
-  EXPECT_EQ(stats.find("lim:0 abort:0 air:0; hits: 0:3"), 0);
+  EXPECT_EQ(stats.find("lim:0 abort:0 air:0:0%; hits: 0:3"), 0);
 }
 
 // ---------------------------------------------------------------- channel store
