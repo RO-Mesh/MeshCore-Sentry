@@ -30,7 +30,7 @@
 #include <helpers/IdentityStore.h>   // FILESYSTEM typedef
 #include <helpers/RegionMap.h>       // RegionEntry (region= predicate)
 #include "PacketFilterConfig.h"
-#include "TinyRegex.h"
+#include "PatternMatch.h"
 
 // actions
 #define FILTER_ACT_ALLOW     0

@@ -34,6 +34,10 @@
  *
  * NOTE: no groups '(...)' and no alternation '|'. NOTE: '\n' and '\t' are NOT
  * C-style escapes ('\n' matches a literal 'n'); use '\s' for whitespace.
+ *
+ * The user-facing sender=/text= dialect lives one layer up, in
+ * PatternMatch.h/.cpp: alternation ('|'), the alternative cap and structural
+ * validation. Syntax is added there, not here.
  */
 
 #ifndef _TINY_REGEX_C
