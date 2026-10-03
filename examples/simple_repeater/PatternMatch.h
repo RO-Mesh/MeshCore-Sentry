@@ -20,12 +20,6 @@
 //     everything. Both are add-time rules only: when matching, a branch that
 //     cannot match is skipped so a config stored before '|' was an alternation
 //     keeps the branches it does have.
-//   - A quantifier needs something repeatable in front of it, and '^'/'$' only
-//     anchor at the edges of their own alternative: "*Bot", "a**", "A^B" and
-//     "^*$" are rejected. The engine leaves the operand of such a quantifier
-//     uninitialised, so it would match according to whichever pattern was
-//     compiled before it; these rules keep a rule's verdict stable. Like the
-//     empty alternative, matching skips them rather than guessing.
 // A pattern is stored as text and re-split on every evaluation, so the
 // compiled engine state never outlives one evaluation. Cost is bounded by the
 // alternatives a stored pattern can hold (one per '|', within its length

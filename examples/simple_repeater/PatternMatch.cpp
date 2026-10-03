@@ -47,58 +47,6 @@ static int splitAlternatives(const char* pattern, char* buf, size_t buf_sz) {
   return alts;
 }
 
-// Why the engine cannot evaluate an alternative predictably. re_compile()
-// never fills in the `ch` of BEGIN/END/quantifier symbols, and matchone()
-// compares that byte whenever such a symbol is used as an operand — so these
-// shapes match whatever the previously compiled pattern left behind, and a rule
-// built on one decides packets differently from one packet to the next. The
-// wrapper refuses them instead, both at add time and when matching.
-enum AltDefect {
-  ALT_OK = 0,
-  ALT_NOTHING_TO_REPEAT,   // '*', '+' or '?' with no repeatable symbol before it
-  ALT_ANCHOR_MISPLACED,    // '^' or '$' that is not at an edge of the alternative
-};
-
-// Classify one alternative by scanning it the way the engine parses it: a '\'
-// escape and a [...] class each hold literal bytes, and the escape is checked
-// first so '[\]]' does not end the class early. Deterministic by construction —
-// every byte is consumed exactly once, and the trailing '\' case the engine
-// rejects is skipped rather than stepped over.
-static AltDefect altDefect(const char* alt) {
-  enum { NONE, EDGE, QUANTIFIED, REPEATABLE } prev = NONE;   // previous symbol
-  bool in_class = false;
-  for (size_t i = 0; alt[i]; i++) {
-    char c = alt[i];
-    if (c == '\\') {
-      if (alt[i + 1]) i++;                     // the escaped byte is a literal
-      if (!in_class) prev = REPEATABLE;
-      continue;
-    }
-    if (in_class) {
-      if (c == ']') { in_class = false; prev = REPEATABLE; }   // a class is repeatable
-      continue;
-    }
-    if (c == '[') { in_class = true; continue; }
-    if (c == '*' || c == '+' || c == '?') {
-      if (prev != REPEATABLE) return ALT_NOTHING_TO_REPEAT;
-      prev = QUANTIFIED;   // a quantifier is not itself repeatable
-      continue;
-    }
-    if (c == '^') {
-      if (prev != NONE) return ALT_ANCHOR_MISPLACED;   // only anchors at the start
-      prev = EDGE;
-      continue;
-    }
-    if (c == '$') {
-      if (alt[i + 1] != 0) return ALT_ANCHOR_MISPLACED;   // only at the end
-      prev = EDGE;
-      continue;
-    }
-    prev = REPEATABLE;   // ordinary char, '.', or a ']' outside a class
-  }
-  return ALT_OK;
-}
-
 bool patternValid(const char* pattern, char* err, size_t err_sz) {
   err[0] = 0;
   char buf[PATTERN_SPLIT_MAX];
@@ -117,15 +65,6 @@ bool patternValid(const char* pattern, char* err, size_t err_sz) {
       snprintf(err, err_sz, "empty alternative");
       return false;
     }
-    switch (altDefect(alt)) {   // say the actionable thing before "bad regex"
-      case ALT_NOTHING_TO_REPEAT:
-        snprintf(err, err_sz, "nothing to repeat");
-        return false;
-      case ALT_ANCHOR_MISPLACED:
-        snprintf(err, err_sz, "^ and $ must be at the pattern edges");
-        return false;
-      default: break;
-    }
     if (re_compile(alt) == NULL) return false;   // engine rejects it: no reason given
   }
   return true;
@@ -139,12 +78,11 @@ bool patternMatches(const char* pattern, const char* subject) {
   const char* alt = buf;
   for (int i = 0; i < alts; i++, alt += strlen(alt) + 1) {
     // Branches that cannot match are skipped rather than failing the whole
-    // pattern: an empty one would match everything, one the engine refuses is
-    // broken, and one the engine would decide by luck is worse. `filter add`
-    // rejects all three, so only a config stored before '|' was an alternation
-    // can hold one ("A||B") — the branches around it should keep working.
+    // pattern: an empty one would match everything, and one the engine refuses
+    // is broken. `filter add` rejects both, so only a config stored before '|'
+    // was an alternation can hold one ("A||B") — the branches around it should
+    // keep working.
     if (alt[0] == 0) continue;
-    if (altDefect(alt) != ALT_OK) continue;
     re_t compiled = re_compile(alt);
     if (compiled == NULL) continue;
     int matchlength;

@@ -358,7 +358,13 @@ static int matchone(regex_t p, char c)
     case NOT_ALPHA:      return !matchalphanum(c);
     case WHITESPACE:     return  matchwhitespace(c);
     case NOT_WHITESPACE: return !matchwhitespace(c);
-    default:             return  (p.u.ch == (unsigned char)c);  /* byte compare: c may be signed, u.ch is not (multi-byte UTF-8, e.g. emoji) */
+    case CHAR:           return  (p.u.ch == (unsigned char)c);  /* byte compare: c may be signed, u.ch is not (multi-byte UTF-8, e.g. emoji) */
+    /* BEGIN/END/quantifier symbol used as an operand — nothing to repeat
+       ('*Bot'), a stray '^' ('A^B'), stacked quantifiers ('a**'). re_compile()
+       leaves `u.ch` unset for those symbols, so comparing it here made the
+       verdict depend on whichever pattern was compiled before. They consume
+       nothing, so they match nothing. */
+    default:             return  0;
   }
 }
 

@@ -12,7 +12,15 @@
  *   - re_budget_exhausted() reports whether the last match aborted;
  *   - renamed re.h/re.c to TinyRegex.h/TinyRegex.cpp.
  *   - fixed matchone() to compare the pattern char as unsigned char, so
- *     literal bytes >= 0x80 (multi-byte UTF-8, e.g. emoji) can match.
+ *     literal bytes >= 0x80 (multi-byte UTF-8, e.g. emoji) can match;
+ *   - fixed matchone() to match nothing when a BEGIN/END/quantifier symbol is
+ *     used as an operand ("nothing to repeat", a stray '^', stacked
+ *     quantifiers): re_compile() never sets `ch` for those symbols, so
+ *     comparing it made a pattern match or not depending on whichever pattern
+ *     was compiled before it — a rule could decide packets at random.
+ *
+ * Bug fixes only, and only after asking: features and syntax belong in
+ * PatternMatch.h/.cpp, not here (see the fork's AGENTS.md).
  *
  * Supports:
  * ---------

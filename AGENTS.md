@@ -45,12 +45,8 @@ commit** — the guides are user-facing API documentation, not optional docs.
 - `TinyRegex.h/.cpp` — vendored kokke/tiny-regex-c + step budget (see Hard
   invariants; treat as upstream).
 - `PatternMatch.h/.cpp` — the user-facing pattern language: top-level `|`
-  alternation, structural validation (empty alternative, nothing to repeat,
-  anchors at the edges), `FILTER_PATTERN_MAX_ALTS`; thin wrapper over the
-  vendored engine. The structural rules exist because the engine leaves the
-  operand of a bare quantifier and of a misplaced anchor uninitialised, so such
-  patterns match according to whatever was compiled before them — the wrapper
-  keeps a rule's verdict stable.
+  alternation, structural validation (empty alternative, alternative cap); thin
+  wrapper over the vendored engine.
 - `CliUtil.h` — shared CLI helpers (`nextToken`, `radd`, `CLI_REPLY_MAX`)
   used by filter and battery CLIs alike.
 - `BatteryGate.h/.cpp` — low-battery forward suspension, `battery` CLI.
@@ -59,7 +55,7 @@ commit** — the guides are user-facing API documentation, not optional docs.
   dispatch, lazy-save loop).
 - `main.cpp` — serial CLI entry (upstream + fork's buffer-hardening lines).
 
-**Tests:** `test/test_packet_filter/` (220 behavior-level cases: matching,
+**Tests:** `test/test_packet_filter/` (217 behavior-level cases: matching,
 content rules, limiter, persistence upgrades, CLI surface, TinyRegex,
 PatternMatch) and `test/test_battery_gate/`. Test-only shims: `NativeShim.h`,
 `NativeTestStubs.cpp`, `RegionMapStub.cpp`, `FilterTestHelpers.h`.
@@ -161,8 +157,14 @@ FILTER.md:
 1. **Config persistence layout.** See *Backwards compatibility* above; the
    `static_assert`s in `PacketFilter.h` are the enforced form of that rule.
 2. **Vendored TinyRegex.** Only the documented modifications (step budget,
-   `re_budget_exhausted()`, unsigned-char literal compare) — no other edits, or
-   the vendoring diff against kokke/tiny-regex-c becomes unmaintainable.
+   `re_budget_exhausted()`, unsigned-char literal compare, and the `matchone()`
+   operand fix) — no other edits, or the vendoring diff against
+   kokke/tiny-regex-c becomes unmaintainable. **A bug fix is the only reason to
+   touch vendored source, and only after asking first:** not every bug is worth
+   a vendored edit — weigh a one-line engine fix against reimplementing the
+   check in the wrapper, and propose the trade-off (diff size, hot-path cost,
+   what else it would pin down) rather than deciding unilaterally. Features,
+   syntax and tuning are never a reason.
 3. **CLI reply buffer is 160 bytes.** All writes bounded: one-liners via
    `snprintf(reply, CLI_REPLY_MAX, ...)`, staged output via `radd()`; never
    unbounded `sprintf` into `reply`. Shared CLI helpers (`nextToken`, `radd`)
@@ -173,9 +175,10 @@ FILTER.md:
 5. **Pattern syntax lives in the wrapper, not in the vendored engine.**
    `examples/simple_repeater/PatternMatch.*` owns every user-visible syntax
    decision (alternation splitting, structural validation, the alternative
-   cap). `TinyRegex.cpp` keeps only the three documented modifications and
+   cap). `TinyRegex.cpp` keeps only the documented modifications and
    `TinyRegex.h`'s only role is the engine API. A change that adds syntax by
-   editing the engine violates this.
+   editing the engine violates this. Fixing an engine *bug* does not (see 2),
+   but it must not grow into a second dialect living in two places.
 
 ## Tests & verification — all code paths covered
 
@@ -183,7 +186,7 @@ FILTER.md:
   paths, added in the same commit. The suites are behavior-level (native
   googletest); reach them via the same CLI/`checkPacket`/`checkContent`
   entry points a user or the firmware would.
-- Pure refactors keep both suites green **unchanged** — the suite (220 filter
+- Pure refactors keep both suites green **unchanged** — the suite (217 filter
   cases) is the safety net that proves no behavior slipped.
 - Run both suites, then re-read the diff:
 
