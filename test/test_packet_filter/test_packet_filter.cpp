@@ -1,10 +1,10 @@
 // test_packet_filter.cpp — native unit tests for the simple_repeater packet
-// filter (examples/simple_repeater/PacketFilter* + TinyRegex). Built by
-// [env:native_packet_filter] in platformio.ini; see that env for the shim and
-// stub notes.
+// filter (examples/simple_repeater/PacketFilter* + PatternMatch* + TinyRegex).
+// Built by [env:native_packet_filter] in platformio.ini; see that env for the
+// shim and stub notes.
 //
-// Sections: TinyRegex, packet-level matching, content rules, advert rate
-// limiter, management/persistence, and the filter CLI.
+// Sections: TinyRegex, PatternMatch, packet-level matching, content rules,
+// advert rate limiter, management/persistence, and the filter CLI.
 //
 // Coverage map (2026-09-13 host-native gap analysis; on-air semantics mirrored
 // from the Phase-4 raw-packet suites):
@@ -21,6 +21,7 @@
 //       gate) section; throttle= parse/echo/capacity -> filter CLI surface;
 //       throttle persistence + v6 record growth  -> management/persistence
 //   regex budget/anchors/classes                 -> TinyRegex* tests
+//   pattern alternation (split/reject/budget)    -> PatternMatch* tests
 //   hook order (battery gate -> checkPacket -> disable_fwd, MyMesh.cpp
 //       allowPacketForward; checkContent in onGroupDataRecv) is a MyMesh
 //       wiring property, asserted by code review of the hook lines, not here
@@ -194,6 +195,212 @@ TEST(TinyRegexClasses, EdgeClasses) {
   EXPECT_EQ(match("[]", "abc"), -1);          // ...but matches nothing
   EXPECT_EQ(match("[-a]+", "--aa"), 0);       // leading '-' is a literal
   EXPECT_EQ(match("[a-]+", "a-a"), 0);        // trailing '-' is a literal
+}
+
+TEST(TinyRegexOperands, NothingToRepeatMatchesNothing) {
+  // a quantifier or anchor used as an operand has no `ch` of its own, so it
+  // used to compare an uninitialised byte and match or not depending on
+  // whichever pattern was compiled before. It now matches nothing, always.
+  const char* pats[] = {"*Bot", "a**", "A^B", "^*", "?x", "a?*"};
+  const char* subjects[] = {"Bot", "aBot9", "", "^^", "*Bot", "a"};
+  for (const char* pat : pats) {
+    for (const char* subj : subjects) {
+      re_compile("abcdefghijklmnopqrstuvwxyz0123456789");   // dirty the shared state
+      EXPECT_EQ(match(pat, subj), -1) << pat << " vs " << subj;
+    }
+  }
+  // a quantifier on '$' has no operand to reject, so it degenerates to matching
+  // the empty string — harmless and stable, which is what matters here
+  EXPECT_EQ(match("$*", "Bot"), 0);
+  re_compile("abcdefghijklmnopqrstuvwxyz0123456789");
+  EXPECT_EQ(match("$*", "Bot"), 0);
+  // ... while every well-formed pattern keeps matching what it always did
+  EXPECT_EQ(match("Bot[0-9]*", "aBot9"), 1);
+  EXPECT_EQ(match("^Bot$", "Bot"), 0);
+  EXPECT_EQ(match("a*b*c", "xxaabbc"), 2);
+  EXPECT_EQ(match("[a-c]*b", "aab"), 0);
+}
+
+// ============================================================
+// UNIT TESTS: PatternMatch (top-level '|' alternation + validation)
+// ============================================================
+
+#include "PatternMatch.h"
+
+namespace {
+
+// reason patternValid() reports for a rejected pattern; "" when the wrapper
+// defers to the engine (caller's own "bad/long ... regex" fallback)
+std::string why(const char* pattern) {
+  char err[PATTERN_ERR_MAX];
+  bool ok = patternValid(pattern, err, sizeof(err));
+  EXPECT_FALSE(ok) << pattern;   // the reason only exists for rejected patterns
+  return std::string(err);
+}
+
+// true if the pattern is accepted (its wrapper reason is printed if it is not)
+bool accepted(const char* pattern) {
+  char err[PATTERN_ERR_MAX];
+  bool ok = patternValid(pattern, err, sizeof(err));
+  EXPECT_TRUE(ok) << pattern << ": " << err;
+  return ok;
+}
+
+}   // namespace
+
+TEST(PatternMatchAlternation, MatchesEitherAlternative) {
+  EXPECT_TRUE(patternMatches("Alice|Bob", "Alice"));
+  EXPECT_TRUE(patternMatches("Alice|Bob", "Bob"));
+  EXPECT_FALSE(patternMatches("Alice|Bob", "Carol"));
+}
+
+TEST(PatternMatchAlternation, UnanchoredAlternativesMatchAnywhere) {
+  // same dialect as before: unanchored means search-anywhere
+  EXPECT_TRUE(patternMatches("Alice|Bob", "not-Alice"));
+  EXPECT_TRUE(patternMatches("Alice|Bob", "xxBobxx"));
+  EXPECT_TRUE(patternMatches("Bot|PING", "xxPINGxx"));
+}
+
+TEST(PatternMatchAlternation, AnchorsBindToTheirOwnBranch) {
+  EXPECT_TRUE(patternMatches("^A$|^B$", "A"));
+  EXPECT_TRUE(patternMatches("^A$|^B$", "B"));
+  EXPECT_FALSE(patternMatches("^A$|^B$", "AB"));
+  // POSIX semantics: "^Alice|Bob$" is "(^Alice)|(Bob$)" — not an exact match of
+  // either: "AliceX" matches the first branch, "xxBob" the second
+  EXPECT_TRUE(patternMatches("^Alice|Bob$", "AliceX"));
+  EXPECT_TRUE(patternMatches("^Alice|Bob$", "xxBob"));
+  EXPECT_FALSE(patternMatches("^Alice|Bob$", "xAlicex xxBobx"));
+}
+
+TEST(PatternMatchEscapes, EscapedPipeAndClassPipeAreLiteral) {
+  EXPECT_TRUE(patternMatches("a\\|b", "a|b"));
+  EXPECT_FALSE(patternMatches("a\\|b", "aXXb"));
+  EXPECT_TRUE(patternMatches("[|]", "x|y"));   // pipe inside a class
+  EXPECT_TRUE(patternMatches("[|]", "|"));
+  EXPECT_TRUE(patternMatches("x[ab|]z", "xbz"));   // class member, not a split
+  EXPECT_TRUE(patternMatches("x[ab|]z", "x|z"));
+  EXPECT_FALSE(patternMatches("x[ab|]z", "xz"));
+  // escaped class terminator keeps the class open, so the '|' after it is still
+  // top level: "A" matching proves the split happened
+  EXPECT_TRUE(patternMatches("[\\]]|A", "A"));
+  EXPECT_TRUE(patternMatches("[\\]]|A", "x]"));   // first branch is the class {]}
+}
+
+TEST(PatternMatchValidation, EmptyAlternativesRejected) {
+  EXPECT_EQ(why("A|"), "empty alternative");
+  EXPECT_EQ(why("|A"), "empty alternative");
+  EXPECT_EQ(why("A||B"), "empty alternative");
+  EXPECT_EQ(why("|"), "empty alternative");
+}
+
+TEST(PatternMatchValidation, AlternativeCapEnforced) {
+  EXPECT_TRUE(accepted("a|b|c|d|e|f|g|h"));   // exactly the cap
+  EXPECT_EQ(why("a|b|c|d|e|f|g|h|i"), "too many alternatives (max 8)");
+}
+
+TEST(PatternMatchValidation, EngineErrorsCarryNoReason) {
+  // the wrapper defers broken branch syntax to the engine; the caller's own
+  // "bad/long ... regex" wording stays authoritative
+  EXPECT_EQ(why("A|[a"), "");
+  EXPECT_EQ(why("A|BC\\"), "");
+  // branch past the engine's symbol capacity (29 max)
+  std::string deep_branch(30, 'a');
+  EXPECT_EQ(why(deep_branch.c_str()), "");
+}
+
+TEST(PatternMatchDeterminism, VerdictDoesNotDependOnEarlierPatterns) {
+  // re_compile() reuses one static symbol array. matchone() now refuses to
+  // compare the byte it never sets for BEGIN/END/quantifier symbols, so no
+  // pattern's verdict can depend on what was compiled before it; this pins that
+  // down through the filter's own entry point, across the whole table.
+  const char* pats[] = {"*Bot", "?x", "a**", "^*", "A^B", "^Bot$", "Bot[0-9]+",
+                        "^a|b$", "[^a]+", "\\d{3}", "^$", "a|", "x[ab|]y"};
+  const char* primes[] = {"a*b*c*d*", "[xyz]", "^abc$", "\\w\\d", "z", "*", "?"};
+  const char* subjects[] = {"", "a", "Bot", "Bot42", "a*b", "xxBotxx", "{3}"};
+  for (const char* p : pats) {
+    for (const char* s : subjects) {
+      bool first = patternMatches(p, s);
+      for (const char* prime : primes) {
+        patternMatches(prime, "seed");   // dirty the shared engine state
+        EXPECT_EQ(patternMatches(p, s), first) << p << " after " << prime;
+      }
+    }
+  }
+}
+
+TEST(PatternMatchValidation, LegacyPipePatternsKeepTheirUsableBranches) {
+  // A config stored by firmware that took '|' literally can hold a pattern the
+  // new dialect refuses at add time ("A||B" compiled fine as literal text).
+  // Matching skips the empty branch — it would match everything — and keeps the
+  // branches around it.
+  EXPECT_EQ(why("A||B"), "empty alternative");
+  EXPECT_TRUE(patternMatches("A||B", "A"));
+  EXPECT_TRUE(patternMatches("A||B", "xBx"));
+  EXPECT_FALSE(patternMatches("A||B", "zz"));
+  EXPECT_TRUE(patternMatches("A|", "A"));
+  EXPECT_FALSE(patternMatches("A|", "zz"));
+  EXPECT_TRUE(patternMatches("|A", "A"));
+  EXPECT_FALSE(patternMatches("|A", "zz"));
+  EXPECT_FALSE(patternMatches("", "anything"));   // empty pattern is never a wildcard
+  EXPECT_FALSE(patternAborted());
+}
+
+TEST(PatternMatchValidation, OverLongPatternIsRejectedNotTruncated) {
+  // longer than either rule pattern storage, so it can never come from a config;
+  // the API must still refuse it instead of reading past its split buffer
+  std::string over(FILTER_SENDER_PATTERN_LEN + FILTER_TEXT_PATTERN_LEN, 'a');
+  EXPECT_EQ(why(over.c_str()), "");     // no wrapper reason: the caller's length check
+  EXPECT_FALSE(patternMatches(over.c_str(), "aa"));
+  EXPECT_FALSE(patternMatches(over.c_str(), over.c_str()));
+  EXPECT_FALSE(patternAborted());
+}
+
+TEST(PatternMatchValidation, GroupedSpellingSplitsAtThePipe) {
+  // no groups: a '|' between parentheses is still top level, so "^(A|B)$" is
+  // the alternatives "^(A" and "B)$" — it matches neither A nor B, and it does
+  // not match the literal name "(A|B)" as a single pattern either
+  EXPECT_FALSE(patternMatches("^(A|B)$", "A"));
+  EXPECT_FALSE(patternMatches("^(A|B)$", "B"));
+  EXPECT_TRUE(patternMatches("^(A|B)$", "(A"));      // first branch: prefix
+  EXPECT_TRUE(patternMatches("^(A|B)$", "B)"));      // second branch: suffix
+  EXPECT_TRUE(patternMatches("^(A|B)$", "(A|B)x"));  // first branch, open tail
+  EXPECT_TRUE(patternMatches("^(A|B)$", "x(A|B)"));  // second branch, open head
+  // escaped parentheses and an escaped pipe are one literal pattern again
+  EXPECT_TRUE(patternMatches("\\(A\\|B\\)", "(A|B)"));
+  EXPECT_FALSE(patternMatches("\\(A\\|B\\)", "A|B"));
+  EXPECT_TRUE(accepted("^(A|B)$"));   // accepted, as it always was
+}
+
+TEST(PatternMatchNoAlternation, UnchangedDialectWithoutPipe) {
+  EXPECT_TRUE(patternMatches("^hello world$", "hello world"));
+  EXPECT_FALSE(patternMatches("^hello world$", "hello world!"));
+  EXPECT_TRUE(patternMatches("Bot[0-9]+$", "Bot42"));
+  EXPECT_FALSE(patternMatches("Bot[0-9]+$", "Bot"));
+  EXPECT_TRUE(patternMatches("\\d+", "ab-1234"));
+  EXPECT_TRUE(patternMatches("v1\\.2", "v1.2"));
+  EXPECT_FALSE(patternMatches("v1\\.2", "v1x2"));
+  EXPECT_TRUE(patternMatches("RX.*OK", "RX  then OK"));
+  EXPECT_FALSE(patternMatches("RX.*OK", "OK then RX"));
+}
+
+TEST(PatternMatchBudget, AbortStopsEvaluationAndIsReported) {
+  re_set_step_budget(10);
+  EXPECT_FALSE(patternMatches("a*a*a*a*a*b|a*a*a*a*a*c", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+  EXPECT_TRUE(patternAborted());
+
+  // a cheap pattern afterwards clears the flag (as the engine does per call)
+  EXPECT_TRUE(patternMatches("abc|cde", "xxabcxx"));
+  EXPECT_FALSE(patternAborted());
+  re_set_step_budget(5000);   // restore the compiled-in default
+}
+
+TEST(PatternMatchBudget, BudgetIsPerAlternative) {
+  // each alternative gets the full budget, so a later branch can still match
+  // after an expensive earlier one that ran out of patience
+  re_set_step_budget(20);
+  EXPECT_TRUE(patternMatches("a*a*a*a*a*b|abc", "abc"));
+  EXPECT_FALSE(patternAborted());
+  re_set_step_budget(5000);
 }
 
 // ============================================================
@@ -782,6 +989,53 @@ TEST_F(FilterTest, RegexBudgetAbortFailsOpenAndCounts) {
                                 payload.len, nullptr),
             FILTER_ACT_ALLOW);   // fail-open: forwarded, not dropped
   EXPECT_EQ(filter.getBudgetAborts(), 1u);
+  re_set_step_budget(5000);   // restore the compiled-in default
+}
+
+TEST_F(FilterTest, AlternationSenderAndText) {
+  expectOk(filter, "add sender=^Alice$|^Bob$ text=^PING$|^PONG$ action=drop");
+  auto chan = channelFromStore(filter, 0);
+
+  struct { const char* sender; const char* text; uint8_t want; } cases[] = {
+    { "Alice", "PING", FILTER_ACT_DROP },
+    { "Bob", "PONG", FILTER_ACT_DROP },
+    { "Carol", "PING", FILTER_ACT_ALLOW },   // no sender alternative matches
+    { "Alice", "HELLO", FILTER_ACT_ALLOW },  // no text alternative matches
+  };
+  for (auto& c : cases) {
+    auto payload = makeGroupText(c.sender, c.text);
+    auto pkt = makePacket(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT, payload.len);
+    EXPECT_EQ(filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, chan, payload.data,
+                                  payload.len, nullptr),
+              c.want)
+        << c.sender << ": " << c.text;
+  }
+  EXPECT_EQ(filter.getRule(0)->hits, 2u);   // only the two matching pairs
+}
+
+TEST_F(FilterTest, AlternationFirstMatchWinsAgainstOverlappingRule) {
+  expectOk(filter, "add text=^PING$|^PONG$");
+  expectOk(filter, "add text=PING");
+  auto chan = channelFromStore(filter, 0);
+  auto payload = makeGroupText("S", "PING");
+  auto pkt = makePacket(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT, payload.len);
+  EXPECT_EQ(filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, chan, payload.data,
+                                payload.len, nullptr),
+            FILTER_ACT_DROP);
+  EXPECT_EQ(filter.getRule(0)->hits, 1u);
+  EXPECT_EQ(filter.getRule(1)->hits, 0u);
+}
+
+TEST_F(FilterTest, AlternationBudgetAbortFailsOpenAndCountsOnce) {
+  expectOk(filter, "add text=a*a*a*a*a*b|^PING$");   // first branch burns the budget
+  re_set_step_budget(10);
+  auto payload = makeGroupText("S", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  auto pkt = makePacket(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT, payload.len);
+  auto chan = channelFromStore(filter, 0);
+  EXPECT_EQ(filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, chan, payload.data,
+                                payload.len, nullptr),
+            FILTER_ACT_ALLOW);   // fail-open: forwarded, not dropped
+  EXPECT_EQ(filter.getBudgetAborts(), 1u);   // one abort, not one per alternative
   re_set_step_budget(5000);   // restore the compiled-in default
 }
 
@@ -2145,6 +2399,43 @@ TEST_F(FilterTest, AddRejectsOverlongRegexWithoutTruncating) {
   cmd += std::string(40, 'a');
   EXPECT_EQ(cli(filter, cmd.c_str()), "Err - bad/long sender regex");
   EXPECT_EQ(filter.getNumRules(), 0);
+}
+
+TEST_F(FilterTest, AddAcceptsAlternationAndGetRoundTrips) {
+  ASSERT_EQ(cli(filter, "add sender=^Alice$|^Bob$ text=^PING$|^PONG$"),
+            "OK - rule 0 added");
+  // get output must stay valid add input: the pattern round-trips verbatim
+  std::string got = cli(filter, "get 0");
+  EXPECT_NE(got.find("sender=^Alice$|^Bob$"), std::string::npos);
+  EXPECT_NE(got.find("text=^PING$|^PONG$"), std::string::npos);
+  EXPECT_EQ(strcmp(filter.getRule(0)->sender, "^Alice$|^Bob$"), 0);
+  EXPECT_EQ(strcmp(filter.getRule(0)->text, "^PING$|^PONG$"), 0);
+}
+
+TEST_F(FilterTest, AddAcceptsGroupedSpellingButItDoesNotMatchAlice) {
+  // no groups: the '|' splits, so sender=^(Alice|Bob)$ is the alternatives
+  // "^(Alice" and "Bob)$" — the rule matches neither Alice nor Bob
+  ASSERT_EQ(cli(filter, "add sender=^(Alice|Bob)$"), "OK - rule 0 added");
+  auto chan = channelFromStore(filter, 0);
+  auto from_alice = makeGroupText("Alice", "hi");
+  auto pkt = makePacket(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT, from_alice.len);
+  EXPECT_EQ(filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, chan, from_alice.data,
+                                from_alice.len, nullptr),
+            FILTER_ACT_ALLOW);
+  EXPECT_EQ(filter.getRule(0)->hits, 0u);
+}
+
+TEST_F(FilterTest, AddRejectsAlternationStructure) {
+  EXPECT_EQ(cli(filter, "add sender=A|"), "Err - empty alternative in sender regex");
+  EXPECT_EQ(cli(filter, "add text=|A"), "Err - empty alternative in text regex");
+  EXPECT_EQ(cli(filter, "add sender=A||B"), "Err - empty alternative in sender regex");
+  EXPECT_EQ(cli(filter, "add text=a|b|c|d|e|f|g|h|i"),
+            "Err - too many alternatives (max 8) in text regex");
+  EXPECT_EQ(filter.getNumRules(), 0);   // every reject rolls the half-added rule back
+  // a broken branch keeps the pre-existing engine wording
+  EXPECT_EQ(cli(filter, "add sender=A|[a"), "Err - bad/long sender regex");
+  EXPECT_EQ(cli(filter, "add sender=Alice\\|Bob"), "OK - rule 0 added");   // escaped pipe
+  EXPECT_NE(cli(filter, "get 0").find("sender=Alice\\|Bob"), std::string::npos);
 }
 
 TEST_F(FilterTest, AddPathRejectsEmptySegments) {

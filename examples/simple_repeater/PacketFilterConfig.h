@@ -35,6 +35,12 @@
   #define FILTER_TEXT_PATTERN_LEN 48   // text regex storage length (NUL incl.)
 #endif
 
+#ifndef FILTER_PATTERN_MAX_ALTS
+  // Alternatives ('|'-separated) allowed per sender=/text= pattern. A parse
+  // limit, not a stored field: it does not affect the persisted record layout.
+  #define FILTER_PATTERN_MAX_ALTS 8
+#endif
+
 #ifndef FILTER_REGION_LIST_LEN
   #define FILTER_REGION_LIST_LEN 32    // region= comma list storage length (NUL incl.)
 #endif

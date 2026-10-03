@@ -517,13 +517,9 @@ bool FilterRules::channelMatchesStore(const FilterRule* r, const mesh::GroupChan
 }
 
 bool FilterRules::regexMatches(const char* pattern, const char* subject) {
-  int matchlength;
-  int idx = re_match(pattern, subject, &matchlength);
-  if (re_budget_exhausted()) {
-    budget_aborts++;     // fail-open: worst case is a spam message repeated
-    return false;
-  }
-  return idx >= 0;   // re_matchp() sets matchlength=0 even on no-match; use idx
+  if (patternMatches(pattern, subject)) return true;
+  if (patternAborted()) budget_aborts++;   // fail-open: worst case is a spam message repeated
+  return false;
 }
 
 uint8_t FilterRules::checkContent(mesh::Packet* pkt, uint8_t type, const mesh::GroupChannel& channel,
@@ -782,10 +778,22 @@ static bool parsePath(const char* tok, FilterRule* r) {
 
 // ---------------------------------------------------------------- filter add
 
-static bool setPattern(char* dest, size_t dest_sz, const char* pattern) {
-  if (strlen(pattern) >= dest_sz) return false;    // reject too-long, never truncate a regex
-  strcpy(dest, pattern);
-  return re_compile(pattern) != 0;                 // validate syntax at add time
+// Store a sender=/text= pattern: reject a value too long for this rule's
+// storage (never truncate a regex) or one the pattern wrapper refuses, then
+// copy it verbatim. `field` names the pattern in the reply.
+static bool setPattern(char* dest, size_t dest_sz, const char* pattern, const char* field,
+                       char* reply) {
+  // zeroed: a too-long pattern short-circuits patternValid(), so why stays
+  // empty and the reply falls back to the length wording below
+  char why[PATTERN_ERR_MAX] = {0};
+  bool ok = strlen(pattern) < dest_sz && patternValid(pattern, why, sizeof(why));
+  if (ok) {
+    strcpy(dest, pattern);
+    return true;
+  }
+  if (why[0]) snprintf(reply, CLI_REPLY_MAX, "Err - %s in %s regex", why, field);
+  else snprintf(reply, CLI_REPLY_MAX, "Err - bad/long %s regex", field);
+  return false;
 }
 
 static bool addRuleParam(FilterRules& filter, FilterRule* r, RegionMap* regions,
@@ -906,19 +914,11 @@ static bool addRuleParam(FilterRules& filter, FilterRule* r, RegionMap* regions,
   }
   if (strcmp(key, "sender") == 0) {
     if (val[0] == 0) { strcpy(reply, "Err - empty regex"); return false; }   // matches everything
-    if (!setPattern(r->sender, FILTER_SENDER_PATTERN_LEN, val)) {
-      strcpy(reply, "Err - bad/long sender regex");
-      return false;
-    }
-    return true;
+    return setPattern(r->sender, FILTER_SENDER_PATTERN_LEN, val, "sender", reply);
   }
   if (strcmp(key, "text") == 0) {
     if (val[0] == 0) { strcpy(reply, "Err - empty regex"); return false; }   // matches everything
-    if (!setPattern(r->text, FILTER_TEXT_PATTERN_LEN, val)) {
-      strcpy(reply, "Err - bad/long text regex");
-      return false;
-    }
-    return true;
+    return setPattern(r->text, FILTER_TEXT_PATTERN_LEN, val, "text", reply);
   }
   if (strcmp(key, "action") == 0) {
     if (strcmp(val, "drop") == 0) r->action = FILTER_ACT_DROP;
