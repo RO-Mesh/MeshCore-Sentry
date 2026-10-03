@@ -733,9 +733,12 @@ is only needed for initial flashing and emergencies.
   change with the `logonly` → `forward` rename, so firmware that still says
   `logonly` reads `forward` rules and behaves identically (count, then
   forward).
-- One intentional reinterpretation: in a stored pattern an unescaped `|` used
-  to mean a literal pipe and now means OR. Firmware from 2026-10 onwards reads
-  such a rule differently — write `\|` if you want a literal pipe.
+- Two stored patterns are read differently by firmware from 2026-10 onwards.
+  An unescaped `|` used to mean a literal pipe and now means OR — write `\|` if
+  you want a literal pipe. And a bare quantifier (`*Bot`, `a**`) or a misplaced
+  anchor (`A^B`) is refused by `filter add` and matches nothing when stored: the
+  engine compared a byte it never set for those, so a rule built on one decided
+  packets differently from one packet to the next.
 - **Never lock out your own admin.** Rules are first-match-wins, so a broad
   early drop rule can silence remote admin login from your app (login replies
   ride the flood path). Before enabling any catch-all drop rule, add a
@@ -787,6 +790,9 @@ Tips:
 
 - A quantifier applies only to the character right before it: `ab+` repeats
   the `b`, not `ab`.
+- A quantifier needs something to repeat in front of it: `Bot\d+` is fine,
+  `*Bot` is refused with `Err - nothing to repeat`. Same for `^` and `$` — they
+  anchor at the edges of a pattern, so `A^B` is refused too.
 - `[Bot]` means one of the characters `B`, `o`, `t` — not the word `Bot`.
 - `\s` includes tabs and line breaks. If you want exactly one space, quote the
   pattern and type the space: `text="^RX OK$"`.
@@ -833,7 +839,9 @@ as ordinary text rather than rejected:
 
 | You might try | What actually happens | Do this instead |
 |---|---|---|
-| Groups: `sender=^(Alice\|Bob)$` | The `|` splits even inside the parentheses, so this matches a name *starting with* `(Alice` or *ending with* `Bob)` — not Alice, not Bob | `sender=^Alice$\|^Bob$` |
+| Groups: `sender=^(Alice\|Bob)$` | The `|` splits even inside the parentheses, so this matches a name *starting with* `(Alice` or *ending with* `Bot)` — not Alice, not Bob | `sender=^Alice$\|^Bob$` |
+| Quantifier with nothing to repeat: `sender=*Bot`, `sender=a**` | Rejected: `Err - nothing to repeat in sender regex`. Older firmware accepted it, but the engine compared a byte it never set and matched or not at random | `sender=Bot\d*` |
+| Anchor away from an edge: `sender=A^B` | Rejected: `Err - ^ and $ must be at the pattern edges in sender regex`, same reason | `sender=^A.*B$` |
 | Counted repeat: `\d{3}` | Matches literal `{3}` | `\d\d\d` |
 | Case-insensitive: `/i`, `(?i)` | Not supported; always case-sensitive | `^[Bb][Oo][Tt]$` |
 | Word boundary: `\b` | Matches the literal letter `b` | See the word-boundary recipe below |
@@ -952,6 +960,8 @@ filter stats
 | Pattern from an online tester misbehaves | Remove `/slashes/`, flags, groups, `{counts}`, `\b` — see the table above |
 | `Err - empty alternative in sender regex` | A `|` with nothing on one side — write `^A$\|^B$`, never end a pattern with a bare pipe |
 | `Err - too many alternatives (max 8) in text regex` | Fewer alternatives per pattern, a broader one (e.g. `^Bot`), or a second rule |
+| `Err - nothing to repeat in sender regex` | A `*`, `+` or `?` with nothing repeatable in front of it — `Bot\d+`, not `*Bot` or `a**` |
+| `Err - ^ and $ must be at the pattern edges in sender regex` | A `^` or `$` away from the start/end of the pattern — `^A.*B$`, not `A^B`; `[^a]` and `\$` are fine |
 | Wrote `^(A\|B)$` and nothing matches | There are no groups: the `|` splits anyway, so it means *starts with `(A`* **or** *ends with `B)`*. Write `^A$\|^B$` |
 | "Bad/long regex" error | Pattern too long (see [Limits](#limits-and-good-to-knows)) or broken syntax; shorten or simplify |
 | `aborted` counter grows | Pattern too complex — simplify it |

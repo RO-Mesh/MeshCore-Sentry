@@ -284,6 +284,60 @@ TEST(PatternMatchValidation, EngineErrorsCarryNoReason) {
   EXPECT_EQ(why(deep_branch.c_str()), "");
 }
 
+TEST(PatternMatchValidation, NothingToRepeatRejected) {
+  // the engine leaves the operand of a bare quantifier uninitialised, so these
+  // used to match or not depending on whatever pattern was compiled before
+  EXPECT_EQ(why("*Bot"), "nothing to repeat");
+  EXPECT_EQ(why("+"), "nothing to repeat");
+  EXPECT_EQ(why("?x"), "nothing to repeat");
+  EXPECT_EQ(why("a**"), "nothing to repeat");
+  EXPECT_EQ(why("a?*"), "nothing to repeat");
+  EXPECT_EQ(why("^*"), "nothing to repeat");
+  EXPECT_EQ(why("a|*"), "nothing to repeat");   // second branch
+  // the shapes that do have something to repeat stay welcome
+  EXPECT_TRUE(accepted("a*b"));
+  EXPECT_TRUE(accepted("Bot[0-9]*"));
+  EXPECT_TRUE(accepted(".*OK"));
+  EXPECT_TRUE(accepted("^a?$"));
+  EXPECT_TRUE(accepted("[ab]*"));
+  EXPECT_TRUE(accepted("\\d+"));
+  EXPECT_TRUE(accepted("\\**"));   // escaped '*' is a literal, and repeatable
+  EXPECT_TRUE(accepted("^Bot$|[0-9]*"));
+}
+
+TEST(PatternMatchValidation, AnchorsMustBeAtPatternEdges) {
+  EXPECT_EQ(why("A^B"), "^ and $ must be at the pattern edges");
+  EXPECT_EQ(why("A$B"), "^ and $ must be at the pattern edges");
+  EXPECT_EQ(why("^^a"), "^ and $ must be at the pattern edges");
+  EXPECT_EQ(why("a$$"), "^ and $ must be at the pattern edges");
+  EXPECT_TRUE(accepted("^a$"));
+  EXPECT_TRUE(accepted("^$"));
+  EXPECT_TRUE(accepted("^a|b$"));    // per alternative, not per pattern
+  EXPECT_TRUE(accepted("[^a]"));     // '^' inside a class is a member
+  EXPECT_TRUE(accepted("a\\^b"));    // escaped
+  EXPECT_TRUE(accepted("[$]"));
+}
+
+TEST(PatternMatchDeterminism, VerdictDoesNotDependOnEarlierPatterns) {
+  // re_compile() reuses one static symbol array, and the engine compares the
+  // byte it never sets for BEGIN/END/quantifier symbols. Any pattern whose
+  // verdict could depend on what was compiled before it is refused now; this
+  // pins that down for the whole table, accepted patterns included.
+  const char* pats[] = {"*Bot", "?x", "a**", "^*", "A^B", "^Bot$", "Bot[0-9]+",
+                        "^a|b$", "[^a]+", "\\d{3}", "^$", "a|", "x[ab|]y"};
+  const char* primes[] = {"a*b*c*d*", "[xyz]", "^abc$", "\\w\\d", "z", "*", "?"};
+  const char* subjects[] = {"", "a", "Bot", "Bot42", "a*b", "xxBotxx", "{3}"};
+  for (const char* p : pats) {
+    for (const char* s : subjects) {
+      bool first = patternMatches(p, s);
+      for (const char* prime : primes) {
+        patternMatches(prime, "seed");   // dirty the shared engine state
+        EXPECT_EQ(patternMatches(p, s), first) << p << " after " << prime;
+      }
+    }
+  }
+}
+
 TEST(PatternMatchValidation, LegacyPipePatternsKeepTheirUsableBranches) {
   // A config stored by firmware that took '|' literally can hold a pattern the
   // new dialect refuses at add time ("A||B" compiled fine as literal text).
@@ -2392,6 +2446,37 @@ TEST_F(FilterTest, AddRejectsAlternationStructure) {
   EXPECT_EQ(cli(filter, "add sender=A|[a"), "Err - bad/long sender regex");
   EXPECT_EQ(cli(filter, "add sender=Alice\\|Bob"), "OK - rule 0 added");   // escaped pipe
   EXPECT_NE(cli(filter, "get 0").find("sender=Alice\\|Bob"), std::string::npos);
+}
+
+TEST_F(FilterTest, AddRejectsPatternsTheEngineCannotDecide) {
+  // a bare quantifier or a misplaced anchor leaves the engine comparing an
+  // uninitialised byte, so the rule would decide packets at random
+  EXPECT_EQ(cli(filter, "add sender=*Bot"), "Err - nothing to repeat in sender regex");
+  EXPECT_EQ(cli(filter, "add text=a**"), "Err - nothing to repeat in text regex");
+  EXPECT_EQ(cli(filter, "add sender=A^B"),
+            "Err - ^ and $ must be at the pattern edges in sender regex");
+  EXPECT_EQ(cli(filter, "add text=^Bot$|^PING$"), "OK - rule 0 added");
+  EXPECT_EQ(cli(filter, "add sender=^Pong$ text=PING$|PONG$"), "OK - rule 1 added");
+  auto chan = channelFromStore(filter, 0);
+  auto payload = makeGroupText("Pong", "PING");
+  auto pkt = makePacket(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT, payload.len);
+  EXPECT_EQ(filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, chan, payload.data,
+                                payload.len, nullptr),
+            FILTER_ACT_DROP);   // the good rules still work
+}
+
+TEST_F(FilterTest, StoredUndecidablePatternNeverMatches) {
+  // firmware before the alternation accepted this; the engine would decide it
+  // by whatever it compiled last, so the rule now matches nothing (fail-open)
+  strcpy(filter.addRule()->sender, "*Bot");
+  strcpy(filter.getRule(0)->text, "PING^");
+  auto chan = channelFromStore(filter, 0);
+  auto payload = makeGroupText("Bot", "PING");
+  auto pkt = makePacket(ROUTE_TYPE_FLOOD, PAYLOAD_TYPE_GRP_TXT, payload.len);
+  EXPECT_EQ(filter.checkContent(&pkt, PAYLOAD_TYPE_GRP_TXT, chan, payload.data,
+                                payload.len, nullptr),
+            FILTER_ACT_ALLOW);
+  EXPECT_EQ(filter.getRule(0)->hits, 0u);
 }
 
 TEST_F(FilterTest, AddPathRejectsEmptySegments) {

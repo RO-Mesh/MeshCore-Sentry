@@ -45,8 +45,12 @@ commit** — the guides are user-facing API documentation, not optional docs.
 - `TinyRegex.h/.cpp` — vendored kokke/tiny-regex-c + step budget (see Hard
   invariants; treat as upstream).
 - `PatternMatch.h/.cpp` — the user-facing pattern language: top-level `|`
-  alternation, structural validation, `FILTER_PATTERN_MAX_ALTS`; thin wrapper
-  over the vendored engine.
+  alternation, structural validation (empty alternative, nothing to repeat,
+  anchors at the edges), `FILTER_PATTERN_MAX_ALTS`; thin wrapper over the
+  vendored engine. The structural rules exist because the engine leaves the
+  operand of a bare quantifier and of a misplaced anchor uninitialised, so such
+  patterns match according to whatever was compiled before them — the wrapper
+  keeps a rule's verdict stable.
 - `CliUtil.h` — shared CLI helpers (`nextToken`, `radd`, `CLI_REPLY_MAX`)
   used by filter and battery CLIs alike.
 - `BatteryGate.h/.cpp` — low-battery forward suspension, `battery` CLI.
@@ -55,7 +59,7 @@ commit** — the guides are user-facing API documentation, not optional docs.
   dispatch, lazy-save loop).
 - `main.cpp` — serial CLI entry (upstream + fork's buffer-hardening lines).
 
-**Tests:** `test/test_packet_filter/` (215 behavior-level cases: matching,
+**Tests:** `test/test_packet_filter/` (220 behavior-level cases: matching,
 content rules, limiter, persistence upgrades, CLI surface, TinyRegex,
 PatternMatch) and `test/test_battery_gate/`. Test-only shims: `NativeShim.h`,
 `NativeTestStubs.cpp`, `RegionMapStub.cpp`, `FilterTestHelpers.h`.
@@ -179,7 +183,7 @@ FILTER.md:
   paths, added in the same commit. The suites are behavior-level (native
   googletest); reach them via the same CLI/`checkPacket`/`checkContent`
   entry points a user or the firmware would.
-- Pure refactors keep both suites green **unchanged** — the suite (215 filter
+- Pure refactors keep both suites green **unchanged** — the suite (220 filter
   cases) is the safety net that proves no behavior slipped.
 - Run both suites, then re-read the diff:
 
