@@ -1,7 +1,7 @@
 // test_packet_filter.cpp — native unit tests for the simple_repeater packet
-// filter (examples/simple_repeater/PacketFilter* + TinyRegex). Built by
-// [env:native_packet_filter] in platformio.ini; see that env for the shim and
-// stub notes.
+// filter (examples/simple_repeater/PacketFilter* + PatternMatch* + TinyRegex).
+// Built by [env:native_packet_filter] in platformio.ini; see that env for the
+// shim and stub notes.
 //
 // Sections: TinyRegex, PatternMatch, packet-level matching, content rules,
 // advert rate limiter, management/persistence, and the filter CLI.
@@ -201,12 +201,6 @@ TEST(TinyRegexClasses, EdgeClasses) {
 // UNIT TESTS: PatternMatch (top-level '|' alternation + validation)
 // ============================================================
 
-// Native tests for PatternMatch — the user-facing pattern language layered on
-// the vendored engine: '|' alternation, anchors per branch, structural
-// rejections, and the step-budget interaction.
-
-#include <gtest/gtest.h>
-
 #include "PatternMatch.h"
 
 namespace {
@@ -214,7 +208,7 @@ namespace {
 // reason patternValid() reports for a rejected pattern; "" when the wrapper
 // defers to the engine (caller's own "bad/long ... regex" fallback)
 std::string why(const char* pattern) {
-  char err[48];
+  char err[PATTERN_ERR_MAX];
   bool ok = patternValid(pattern, err, sizeof(err));
   EXPECT_FALSE(ok) << pattern;   // the reason only exists for rejected patterns
   return std::string(err);
@@ -222,7 +216,7 @@ std::string why(const char* pattern) {
 
 // true if the pattern is accepted (its wrapper reason is printed if it is not)
 bool accepted(const char* pattern) {
-  char err[48];
+  char err[PATTERN_ERR_MAX];
   bool ok = patternValid(pattern, err, sizeof(err));
   EXPECT_TRUE(ok) << pattern << ": " << err;
   return ok;
@@ -269,10 +263,10 @@ TEST(PatternMatchEscapes, EscapedPipeAndClassPipeAreLiteral) {
 }
 
 TEST(PatternMatchValidation, EmptyAlternativesRejected) {
-  EXPECT_EQ(why("A|"), "empty alternative in regex");
-  EXPECT_EQ(why("|A"), "empty alternative in regex");
-  EXPECT_EQ(why("A||B"), "empty alternative in regex");
-  EXPECT_EQ(why("|"), "empty alternative in regex");
+  EXPECT_EQ(why("A|"), "empty alternative");
+  EXPECT_EQ(why("|A"), "empty alternative");
+  EXPECT_EQ(why("A||B"), "empty alternative");
+  EXPECT_EQ(why("|"), "empty alternative");
 }
 
 TEST(PatternMatchValidation, AlternativeCapEnforced) {
@@ -290,13 +284,46 @@ TEST(PatternMatchValidation, EngineErrorsCarryNoReason) {
   EXPECT_EQ(why(deep_branch.c_str()), "");
 }
 
-TEST(PatternMatchValidation, ParenthesesStayLiteral) {
-  // no groups: '(' and ')' are ordinary characters, exactly as before
-  // alternation existed — so the grouped spelling never matches a name
-  EXPECT_TRUE(patternMatches("^(A|B)$", "(A|B)"));
-  EXPECT_FALSE(patternMatches("^(A|B)$", "Alice"));
+TEST(PatternMatchValidation, LegacyPipePatternsKeepTheirUsableBranches) {
+  // A config stored by firmware that took '|' literally can hold a pattern the
+  // new dialect refuses at add time ("A||B" compiled fine as literal text).
+  // Matching skips the empty branch — it would match everything — and keeps the
+  // branches around it.
+  EXPECT_EQ(why("A||B"), "empty alternative");
+  EXPECT_TRUE(patternMatches("A||B", "A"));
+  EXPECT_TRUE(patternMatches("A||B", "xBx"));
+  EXPECT_FALSE(patternMatches("A||B", "zz"));
+  EXPECT_TRUE(patternMatches("A|", "A"));
+  EXPECT_FALSE(patternMatches("A|", "zz"));
+  EXPECT_TRUE(patternMatches("|A", "A"));
+  EXPECT_FALSE(patternMatches("|A", "zz"));
+  EXPECT_FALSE(patternMatches("", "anything"));   // empty pattern is never a wildcard
+  EXPECT_FALSE(patternAborted());
+}
+
+TEST(PatternMatchValidation, OverLongPatternIsRejectedNotTruncated) {
+  // longer than either rule pattern storage, so it can never come from a config;
+  // the API must still refuse it instead of reading past its split buffer
+  std::string over(FILTER_SENDER_PATTERN_LEN + FILTER_TEXT_PATTERN_LEN, 'a');
+  EXPECT_EQ(why(over.c_str()), "");     // no wrapper reason: the caller's length check
+  EXPECT_FALSE(patternMatches(over.c_str(), "aa"));
+  EXPECT_FALSE(patternMatches(over.c_str(), over.c_str()));
+  EXPECT_FALSE(patternAborted());
+}
+
+TEST(PatternMatchValidation, GroupedSpellingSplitsAtThePipe) {
+  // no groups: a '|' between parentheses is still top level, so "^(A|B)$" is
+  // the alternatives "^(A" and "B)$" — it matches neither A nor B, and it does
+  // not match the literal name "(A|B)" as a single pattern either
   EXPECT_FALSE(patternMatches("^(A|B)$", "A"));
-  EXPECT_TRUE(patternMatches("\\(x\\)", "(x)"));
+  EXPECT_FALSE(patternMatches("^(A|B)$", "B"));
+  EXPECT_TRUE(patternMatches("^(A|B)$", "(A"));      // first branch: prefix
+  EXPECT_TRUE(patternMatches("^(A|B)$", "B)"));      // second branch: suffix
+  EXPECT_TRUE(patternMatches("^(A|B)$", "(A|B)x"));  // first branch, open tail
+  EXPECT_TRUE(patternMatches("^(A|B)$", "x(A|B)"));  // second branch, open head
+  // escaped parentheses and an escaped pipe are one literal pattern again
+  EXPECT_TRUE(patternMatches("\\(A\\|B\\)", "(A|B)"));
+  EXPECT_FALSE(patternMatches("\\(A\\|B\\)", "A|B"));
   EXPECT_TRUE(accepted("^(A|B)$"));   // accepted, as it always was
 }
 
@@ -2341,9 +2368,9 @@ TEST_F(FilterTest, AddAcceptsAlternationAndGetRoundTrips) {
   EXPECT_EQ(strcmp(filter.getRule(0)->text, "^PING$|^PONG$"), 0);
 }
 
-TEST_F(FilterTest, AddAcceptsGroupedSpellingButItNeverMatches) {
-  // no groups: parentheses stay ordinary characters, so this rule matches a
-  // sender literally named "(Alice|Bob)" and nothing else
+TEST_F(FilterTest, AddAcceptsGroupedSpellingButItDoesNotMatchAlice) {
+  // no groups: the '|' splits, so sender=^(Alice|Bob)$ is the alternatives
+  // "^(Alice" and "Bob)$" — the rule matches neither Alice nor Bob
   ASSERT_EQ(cli(filter, "add sender=^(Alice|Bob)$"), "OK - rule 0 added");
   auto chan = channelFromStore(filter, 0);
   auto from_alice = makeGroupText("Alice", "hi");
@@ -2355,11 +2382,11 @@ TEST_F(FilterTest, AddAcceptsGroupedSpellingButItNeverMatches) {
 }
 
 TEST_F(FilterTest, AddRejectsAlternationStructure) {
-  EXPECT_EQ(cli(filter, "add sender=A|"), "Err - empty alternative in regex");
-  EXPECT_EQ(cli(filter, "add text=|A"), "Err - empty alternative in regex");
-  EXPECT_EQ(cli(filter, "add sender=A||B"), "Err - empty alternative in regex");
+  EXPECT_EQ(cli(filter, "add sender=A|"), "Err - empty alternative in sender regex");
+  EXPECT_EQ(cli(filter, "add text=|A"), "Err - empty alternative in text regex");
+  EXPECT_EQ(cli(filter, "add sender=A||B"), "Err - empty alternative in sender regex");
   EXPECT_EQ(cli(filter, "add text=a|b|c|d|e|f|g|h|i"),
-            "Err - too many alternatives (max 8)");
+            "Err - too many alternatives (max 8) in text regex");
   EXPECT_EQ(filter.getNumRules(), 0);   // every reject rolls the half-added rule back
   // a broken branch keeps the pre-existing engine wording
   EXPECT_EQ(cli(filter, "add sender=A|[a"), "Err - bad/long sender regex");

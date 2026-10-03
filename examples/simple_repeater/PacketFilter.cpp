@@ -783,18 +783,17 @@ static bool parsePath(const char* tok, FilterRule* r) {
 // copy it verbatim. `field` names the pattern in the reply.
 static bool setPattern(char* dest, size_t dest_sz, const char* pattern, const char* field,
                        char* reply) {
-  if (strlen(pattern) >= dest_sz) {                // reject too-long, never truncate a regex
-    snprintf(reply, CLI_REPLY_MAX, "Err - bad/long %s regex", field);
-    return false;
+  // zeroed: a too-long pattern short-circuits patternValid(), so why stays
+  // empty and the reply falls back to the length wording below
+  char why[PATTERN_ERR_MAX] = {0};
+  bool ok = strlen(pattern) < dest_sz && patternValid(pattern, why, sizeof(why));
+  if (ok) {
+    strcpy(dest, pattern);
+    return true;
   }
-  char why[48];                                    // wrapper reasons, e.g. alternation
-  if (!patternValid(pattern, why, sizeof(why))) {
-    if (why[0]) snprintf(reply, CLI_REPLY_MAX, "Err - %s", why);
-    else snprintf(reply, CLI_REPLY_MAX, "Err - bad/long %s regex", field);
-    return false;
-  }
-  strcpy(dest, pattern);
-  return true;
+  if (why[0]) snprintf(reply, CLI_REPLY_MAX, "Err - %s in %s regex", why, field);
+  else snprintf(reply, CLI_REPLY_MAX, "Err - bad/long %s regex", field);
+  return false;
 }
 
 static bool addRuleParam(FilterRules& filter, FilterRule* r, RegionMap* regions,
