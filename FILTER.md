@@ -11,7 +11,7 @@ access to the repeater is required.
 **Quick navigation:** [Quick start](#quick-start) ·
 [Common setups](#common-setups) ·
 [Command reference](#command-reference) ·
-[Writing sender/text patterns](#writing-sender-text-patterns)
+[Writing sender/text patterns](#writing-sendertext-patterns)
 
 ---
 
@@ -80,7 +80,7 @@ filter add chan=#test text=^BEACON
 ```
 
 Inside a single `sender=`/`text=` pattern, `|` is the OR — see
-[Writing sender/text patterns](#writing-sender-text-patterns).
+[Writing sender/text patterns](#writing-sendertext-patterns).
 
 ### Good to know
 
@@ -177,7 +177,7 @@ Group-text messages look like `SenderName: message text` after decryption.
   | Name *starts with* `SpamBot` | `sender=^SpamBot` | Matches; also matches `SpamBot2` |
   | Name is *exactly* `SpamBot` | `sender=^SpamBot$` | Matches; not `SpamBot2`, not `spambot` |
 
-  See [Writing sender/text patterns](#writing-sender-text-patterns) for the
+  See [Writing sender/text patterns](#writing-sendertext-patterns) for the
   full pattern language.
 
 ## Cutting advert noise (rate limiter)
@@ -521,6 +521,7 @@ Match the name without its colon. For `SpamBot: BEACON 123`, the sender is
 | `filter add sender=^SpamBot$` | Name is exactly `SpamBot` — not `SpamBot2`, not `spambot` |
 | `filter add chan=#test sender=^Bot[0-9]+$` | `#test` AND names like `Bot1`, `Bot42` — not `Bot` |
 | `filter add sender="^Test Bot$"` | Name exactly `Test Bot`, with the space |
+| `filter add sender=^Alice$\|^Bob$` | Name is exactly `Alice` **or** `Bob` — up to 8 alternatives, see [alternation](#alternation) |
 
 Without `chan`, a sender rule applies to all group text the repeater can
 decrypt.
@@ -536,6 +537,7 @@ Match the message only. For `SpamBot: BEACON 123`, the text is `BEACON 123`.
 | `filter add text=^BEACON$` | Text is exactly `BEACON` — not `BEACON 123` |
 | `filter add text="^RX in place"` | Text starts with that phrase, literal spaces |
 | `filter add chan=#test text=^ID:\s*\d\d\d$` | `#test` AND `ID:` + optional space + exactly three digits |
+| `filter add text=^PING$\|^PONG$` | Text is exactly `PING` **or** `PONG` — see [alternation](#alternation) |
 
 The last pattern matches `ID:123` and `ID: 042`, but not `ID:12` or `ID:1234`.
 
@@ -715,9 +717,8 @@ is only needed for initial flashing and emergencies.
 - Very complicated patterns can be slow to match. Prefer short, distinctive
   patterns like `^BEACON` over long wildcard chains. The `aborted` counter in
   `filter stats` grows if a pattern gives up mid-match; simplify it if you see
-  that. Alternatives are tried in turn, and an anchored alternative is far
-  cheaper than an unanchored one — `^PING$|^PONG$` costs much less than
-  `PING|PONG`.
+  that. Several alternatives multiply that cost — see
+  [Alternation](#alternation).
 - Rules are evaluated **top to bottom, first match wins** over the whole list —
   packet-level and content conditions live in the same ordered list. Older
   fork firmware ran content rules in a separate second pass; with interleaved
@@ -757,9 +758,9 @@ complete reference.
 3. `^` at the start and `$` at the end make the match exact.
 4. Use `.*` for "anything", not a shell-style `*`.
 5. There are **no groups, counted repeats, or flags**.
-6. `|` separates alternatives: `sender=^Alice$|^Bob$`. Anchors belong to
-   their own alternative, so `^Alice|Bob$` means *starts with Alice* **or**
-   *ends with Bob* — put the `$` on both sides for an exact match of either.
+6. `|` separates alternatives: `sender=^Alice$|^Bob$` — see
+   [Alternation](#alternation) for anchors, the 8-alternative cap, and the
+   escape for a literal pipe.
 
 ### Supported syntax
 
@@ -791,6 +792,40 @@ Tips:
   pattern and type the space: `text="^RX OK$"`.
 - To match punctuation like `.` `[` `\` literally, put a backslash in front.
 
+### Alternation
+
+`|` at the top level of a `sender=`/`text=` pattern means OR, so one rule can
+cover several exact values:
+
+```text
+filter add chan=#test sender=^BotA$|^WeatherBot$
+```
+
+- **Anchors bind to their own alternative.** `^Alice|Bob$` means *starts with
+  Alice* **or** *ends with Bob* — not "is Alice or Bob". Put both anchors on
+  each side (`^Alice$|^Bob$`) when you mean an exact match.
+- **There are no groups.** `|` splits wherever it appears at the top level, even
+  between parentheses: `^(Alice|Bob)$` means *starts with `(Alice`* **or** *ends
+  with `Bob)`* — neither Alice nor Bob. Write `^Alice$|^Bob$`; to match the
+  literal name `(Alice|Bob)`, escape the pipe: `^(Alice\|Bob)$`.
+- **At most 8 alternatives** per pattern; exceeding it is rejected. An empty
+  alternative (`A|`, `|A`, `A||B`) is rejected too, because a blank branch would
+  match everything. Both errors name the pattern they came from:
+  `Err - too many alternatives (max 8) in sender regex`,
+  `Err - empty alternative in sender regex`.
+- **A literal pipe needs an escape:** `text=a\|b` matches `a|b`, and `|` inside
+  brackets (`[|]`) is a literal pipe too. A pipe inside one of this guide's
+  tables is written `\|` — that is the plain `|` you type, escaped so the table
+  renders; the literal-pipe escape cannot be shown inside a table, so that case
+  is spelled `[|]` there.
+- **Cost:** alternatives are tried in turn, and each one that fails to match is
+  a full match attempt — `PING|PONG` costs about twice what `PING` alone does
+  on every packet. Keep the branches cheap and anchored (`^PING$|^PONG$`); a
+  pattern that runs out of match budget gives up fail-open and shows up as
+  `aborted` in `filter stats`. The whole pattern, not each alternative, must
+  fit the pattern-length limit — see [Limits](#limits-and-good-to-knows).
+- Only the first alternative that matches matters; the rest are not tried.
+
 ### What doesn't work
 
 These familiar features **do not exist** here — and a few are silently treated
@@ -798,7 +833,7 @@ as ordinary text rather than rejected:
 
 | You might try | What actually happens | Do this instead |
 |---|---|---|
-| Groups: `sender=^(Alice\|Bob)$` | Matches a sender literally named `(Alice\|Bob)` — **not** Alice or Bob. Parentheses are ordinary characters here | `sender=^Alice$\|^Bob$` |
+| Groups: `sender=^(Alice\|Bob)$` | The `|` splits even inside the parentheses, so this matches a name *starting with* `(Alice` or *ending with* `Bob)` — not Alice, not Bob | `sender=^Alice$\|^Bob$` |
 | Counted repeat: `\d{3}` | Matches literal `{3}` | `\d\d\d` |
 | Case-insensitive: `/i`, `(?i)` | Not supported; always case-sensitive | `^[Bb][Oo][Tt]$` |
 | Word boundary: `\b` | Matches the literal letter `b` | See the word-boundary recipe below |
@@ -835,18 +870,12 @@ Patterns are values for `sender` or `text`, exactly as typed at the CLI.
 **OR between names:** one rule, alternatives separated by `|`:
 
 ```text
-filter add chan=#test sender=^BotA$|^WeatherBot$
-```
-
-At most 8 alternatives per pattern, and the whole pattern — every `|` and
-anchor included — must fit the pattern-length limit. When you outgrow that,
-either add a second rule (repeat the shared conditions) or use one broader
-alternative:
-
-```text
 filter add chan=#test sender=^BotA$|^BotB$|^BotC$
 filter add chan=#test sender=^Bot     # covers the whole family
 ```
+
+See [Alternation](#alternation) for the rules that apply to every alternative —
+the cap, the empty-branch rejection, and anchors that bind per alternative.
 
 **Word boundaries:** there is no `\b`. To drop `BOT` as a standalone word
 (separated by spaces, or the whole text), use these alternatives as needed:
@@ -921,9 +950,9 @@ filter stats
 | Matches too broadly | Add `^`/`$` anchors; escape literal dots; remember `sender=Bot` matches `MyBot2` |
 | Combined rule matches nothing | Every condition must be true — test each one alone; check `route=`/case |
 | Pattern from an online tester misbehaves | Remove `/slashes/`, flags, groups, `{counts}`, `\b` — see the table above |
-| `Err - empty alternative in regex` | A `|` with nothing on one side — write `^A$\|^B$`, never `A\|` |
-| `Err - too many alternatives (max 8)` | Fewer alternatives per pattern, a broader one (e.g. `^Bot`), or a second rule |
-| Wrote `^(A\|B)$` and nothing matches | There are no groups: parentheses are ordinary characters. Write `^A$\|^B$` |
+| `Err - empty alternative in sender regex` | A `|` with nothing on one side — write `^A$\|^B$`, never end a pattern with a bare pipe |
+| `Err - too many alternatives (max 8) in text regex` | Fewer alternatives per pattern, a broader one (e.g. `^Bot`), or a second rule |
+| Wrote `^(A\|B)$` and nothing matches | There are no groups: the `|` splits anyway, so it means *starts with `(A`* **or** *ends with `B)`*. Write `^A$\|^B$` |
 | "Bad/long regex" error | Pattern too long (see [Limits](#limits-and-good-to-knows)) or broken syntax; shorten or simplify |
 | `aborted` counter grows | Pattern too complex — simplify it |
 | Drop rule never fires | An earlier overlapping rule (often a `forward` probe) is matching first |

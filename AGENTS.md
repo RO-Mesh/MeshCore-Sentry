@@ -55,7 +55,7 @@ commit** — the guides are user-facing API documentation, not optional docs.
   dispatch, lazy-save loop).
 - `main.cpp` — serial CLI entry (upstream + fork's buffer-hardening lines).
 
-**Tests:** `test/test_packet_filter/` (213 behavior-level cases: matching,
+**Tests:** `test/test_packet_filter/` (215 behavior-level cases: matching,
 content rules, limiter, persistence upgrades, CLI surface, TinyRegex,
 PatternMatch) and `test/test_battery_gate/`. Test-only shims: `NativeShim.h`,
 `NativeTestStubs.cpp`, `RegionMapStub.cpp`, `FilterTestHelpers.h`.
@@ -179,7 +179,7 @@ FILTER.md:
   paths, added in the same commit. The suites are behavior-level (native
   googletest); reach them via the same CLI/`checkPacket`/`checkContent`
   entry points a user or the firmware would.
-- Pure refactors keep both suites green **unchanged** — the suite (213 filter
+- Pure refactors keep both suites green **unchanged** — the suite (215 filter
   cases) is the safety net that proves no behavior slipped.
 - Run both suites, then re-read the diff:
 
