@@ -38,6 +38,9 @@
 #include "RateLimiter.h"
 #include "PacketFilter.h"
 #include "BatteryGate.h"
+#ifdef RO_MESH_SENTRY
+#include "SentryManager.h"
+#endif
 
 #ifdef WITH_BRIDGE
 extern AbstractBridge* bridge;
@@ -104,6 +107,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   RateLimiter discover_limiter, anon_limiter;
   FilterRules filter;
   BatteryGate battGate;
+#ifdef RO_MESH_SENTRY
+  SentryManager sentry;
+#endif
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
   bool region_load_active;

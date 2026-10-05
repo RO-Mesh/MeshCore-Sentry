@@ -468,7 +468,21 @@ void MyMesh::onGroupDataRecv(mesh::Packet* packet, uint8_t type, const mesh::Gro
   if (filter.checkContent(packet, type, channel, data, len, recv_pkt_region, _radio->getEstAirtimeFor(packet->getRawLength())) == FILTER_ACT_DROP) {
     MESH_DEBUG_PRINTLN("filter: dropping group packet by content rule");
     packet->markDoNotRetransmit();
+    return;
   }
+#ifdef RO_MESH_SENTRY
+  if (sentry.handleGroupText(type, channel, data, len, millis())) {
+    SentryPreset preset;
+    if (sentry.takePendingPreset(preset)) {
+      _prefs.freq = preset.freq;
+      _prefs.bw = preset.bw;
+      _prefs.sf = preset.sf;
+      _prefs.cr = preset.cr;
+      savePrefs();
+      MESH_DEBUG_PRINTLN("sentry: preset staged, reboot delayed");
+    }
+  }
+#endif
 }
 
 const char *MyMesh::getLogDateTime() {
@@ -961,6 +975,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
   acl.load(_fs, self_id);
   filter.begin(fs);
   battGate.begin(fs);
+#ifdef RO_MESH_SENTRY
+  sentry.begin(fs);
+#endif
   // TODO: key_store.begin();
   region_map.load(_fs);
 
@@ -1302,6 +1319,12 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
     const char* sub = command + 7;
     while (*sub == ' ') sub++;
     batteryCLI(battGate, board, sub, reply);
+#ifdef RO_MESH_SENTRY
+  } else if (strcmp(command, "sentry status") == 0 ||
+             memcmp(command, "set sentry.", 11) == 0 ||
+             memcmp(command, "set preset ", 11) == 0) {
+    sentry.handleCommand(command, reply);
+#endif
   } else{
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
   }
@@ -1351,6 +1374,14 @@ void MyMesh::loop() {
 
   // battery gate: periodic voltage sample + lazy config save
   battGate.loop(_fs, board);
+
+#ifdef RO_MESH_SENTRY
+  if (sentry.shouldReboot(millis())) {
+    MESH_DEBUG_PRINTLN("sentry: rebooting to apply preset");
+    sentry.clearPendingSwitch();
+    board.reboot();
+  }
+#endif
 
   // update uptime
   uint32_t now = millis();
