@@ -41,6 +41,14 @@ When `sentry.auth` is on, unsigned trigger messages are silently ignored.
 - `set sentry.delay <5..300>`
 - `set preset <id> <freq> <bw> <sf> <cr>`
 - `sentry status`
+- `sentry tokens add <t1> <t2> ...`
+- `sentry tokens del <token|#index>`
+- `sentry tokens clear`
+- `sentry tokens rotate <new1> <new2> ...`
+- `sentry export config`
+- `sentry export presets`
+- `sentry export tokens [start_index]`
+- `sentry import channel|delay|auth|preset|tokens ...`
 
 ## Residual Risk
 

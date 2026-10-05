@@ -1,7 +1,7 @@
 # MeshCore — Repeater Firmware with a Remote-Configurable Packet Filter
 
 This is a feature fork of [MeshCore](https://github.com/meshcore-dev/MeshCore).
-It tracks upstream automatically (synced weekly) and adds two repeater-focused
+It tracks upstream automatically (synced weekly) and adds repeater-focused
 capabilities on top of stock firmware. Everything else — supported boards,
 clients, protocols, build system — is identical to upstream; see the
 [upstream README](https://github.com/meshcore-dev/MeshCore#readme) for the
@@ -34,6 +34,18 @@ flapping, and the admin can check voltage and tune thresholds over the mesh.
 
 → Full guide: **[BATTERY.md](./BATTERY.md)**
 
+### 🎚️ RO-Mesh Sentry
+
+Optional remote radio-profile switching for repeaters. Sentry listens on a
+configured MeshCore group channel for low-profile trigger messages, burns a
+single-use per-repeater token, stages one of three stored radio presets, then
+reboots after a configurable delay so later hops have time to hear the trigger.
+
+Everything is CLI-driven. There is no UI. Token rotation and import/export are
+available through the repeater CLI.
+
+→ Full guide: **[SENTRY.md](./SENTRY.md)**
+
 ## Why run this instead of stock repeater firmware?
 
 Stock repeaters forward everything they hear, until the battery dies. This
@@ -48,6 +60,9 @@ fork is for operators who want policy and resilience at the node:
   other hardware needed.
 - **Solar / off-grid sites** — the node goes quiet *while it can still answer
   you*, instead of disappearing dark, and wakes itself when there's sun again.
+- **Coordinated emergency retunes** — selected repeaters can switch between
+  preconfigured radio profiles using per-repeater one-time triggers instead of
+  a shared fleet password.
 
 ## Getting the firmware
 
