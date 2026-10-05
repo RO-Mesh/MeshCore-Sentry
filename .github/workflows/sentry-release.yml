@@ -1,0 +1,74 @@
+name: RO-Mesh Sentry Release
+
+on:
+  push:
+    tags:
+      - 'sentry-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Firmware version string, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - Heltec_v3_repeater
+          - RAK_3401_repeater
+          - RAK_4631_repeater
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v6
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build Sentry Firmware
+        env:
+          FIRMWARE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+          PLATFORMIO_BUILD_FLAGS: -DRO_MESH_SENTRY
+        run: /usr/bin/env bash build.sh build-firmware ${{ matrix.target }}
+
+      - name: Upload Workflow Artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: out
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: out
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: RO-Mesh Sentry Firmware ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+          prerelease: true
+          body: |
+            RO-Mesh Sentry repeater firmware with `RO_MESH_SENTRY` enabled.
+
+            Targets in this release:
+            - ESP32: `Heltec_v3_repeater`
+            - nRF52: `RAK_3401_repeater`, `RAK_4631_repeater`
+
+            Sentry is CLI-only: per-repeater tokens, optional per-repeater auth,
+            delayed apply, token rotation, and import/export.
+
+            No hardware/RF validation has been performed for this prerelease.
+          files: out/*
