@@ -48,6 +48,24 @@ static bool sentryLooksLikeSig8(const char* s) {
   return s[8] == 0;
 }
 
+static bool sentryValidToken(const char* token) {
+  size_t len = strlen(token);
+  if (len == 0 || len >= SENTRY_MAX_TOKEN_LEN) return false;
+  for (size_t i = 0; i < len; i++) {
+    if (!sentryTokenChar(token[i])) return false;
+  }
+  return true;
+}
+
+static char* sentryNextToken(char*& p) {
+  while (*p == ' ') p++;
+  if (!*p) return NULL;
+  char* start = p;
+  while (*p && *p != ' ') p++;
+  if (*p) *p++ = 0;
+  return start;
+}
+
 static File sentryOpenWrite(FILESYSTEM* fs, const char* filename) {
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   fs->remove(filename);
@@ -139,6 +157,104 @@ bool SentryManager::configureChannel(const char* name, const char* psk_hex) {
 bool SentryManager::channelMatches(const mesh::GroupChannel& channel) const {
   if (_cfg.channel_hash != channel.hash[0]) return false;
   return memcmp(_cfg.channel_secret, channel.secret, _cfg.channel_secret_len) == 0;
+}
+
+int SentryManager::findToken(const char* token) const {
+  for (uint8_t i = 0; i < _cfg.token_count; i++) {
+    if (strcmp(_cfg.tokens[i].value, token) == 0) return i;
+  }
+  return -1;
+}
+
+bool SentryManager::addToken(const char* token) {
+  if (!sentryValidToken(token) || findToken(token) >= 0 || _cfg.token_count >= SENTRY_MAX_TOKENS) {
+    return false;
+  }
+  StrHelper::strzcpy(_cfg.tokens[_cfg.token_count].value, token, SENTRY_MAX_TOKEN_LEN);
+  _cfg.tokens[_cfg.token_count].spent = 0;
+  _cfg.token_count++;
+  return true;
+}
+
+bool SentryManager::deleteToken(const char* token_or_index) {
+  int idx = -1;
+  if (token_or_index[0] == '#') {
+    idx = atoi(token_or_index + 1);
+  } else {
+    idx = findToken(token_or_index);
+  }
+  if (idx < 0 || idx >= _cfg.token_count) return false;
+  memmove(&_cfg.tokens[idx], &_cfg.tokens[idx + 1], (_cfg.token_count - idx - 1) * sizeof(SentryToken));
+  _cfg.token_count--;
+  memset(&_cfg.tokens[_cfg.token_count], 0, sizeof(SentryToken));
+  return save();
+}
+
+void SentryManager::replaceTokens(char* tokens, char* reply) {
+  SentryToken next[SENTRY_MAX_TOKENS];
+  uint8_t next_count = 0;
+  memset(next, 0, sizeof(next));
+
+  char* p = tokens;
+  char* tok;
+  while ((tok = sentryNextToken(p)) != NULL) {
+    if (!sentryValidToken(tok)) {
+      strcpy(reply, "Err - bad token");
+      return;
+    }
+    bool seen = false;
+    for (uint8_t i = 0; i < next_count; i++) {
+      if (strcmp(next[i].value, tok) == 0) {
+        seen = true;
+        break;
+      }
+    }
+    if (seen) continue;
+    if (next_count >= SENTRY_MAX_TOKENS) {
+      strcpy(reply, "Err - too many tokens");
+      return;
+    }
+    StrHelper::strzcpy(next[next_count].value, tok, SENTRY_MAX_TOKEN_LEN);
+    next_count++;
+  }
+
+  memcpy(_cfg.tokens, next, sizeof(_cfg.tokens));
+  _cfg.token_count = next_count;
+  save();
+  snprintf(reply, 160, "OK - %u tokens", (unsigned)_cfg.token_count);
+}
+
+void SentryManager::rotateTokens(char* tokens, char* reply) {
+  int added = 0, replaced = 0, skipped = 0;
+  char* p = tokens;
+  char* tok;
+  while ((tok = sentryNextToken(p)) != NULL) {
+    if (!sentryValidToken(tok) || findToken(tok) >= 0) {
+      skipped++;
+      continue;
+    }
+    int idx = -1;
+    for (uint8_t i = 0; i < _cfg.token_count; i++) {
+      if (_cfg.tokens[i].spent) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx >= 0) {
+      StrHelper::strzcpy(_cfg.tokens[idx].value, tok, SENTRY_MAX_TOKEN_LEN);
+      _cfg.tokens[idx].spent = 0;
+      replaced++;
+    } else if (_cfg.token_count < SENTRY_MAX_TOKENS) {
+      StrHelper::strzcpy(_cfg.tokens[_cfg.token_count].value, tok, SENTRY_MAX_TOKEN_LEN);
+      _cfg.tokens[_cfg.token_count].spent = 0;
+      _cfg.token_count++;
+      added++;
+    } else {
+      skipped++;
+    }
+  }
+  save();
+  snprintf(reply, 160, "OK - add=%d repl=%d skip=%d", added, replaced, skipped);
 }
 
 bool SentryManager::parseTrigger(const char* text, uint8_t& preset, char* token, size_t token_len,
@@ -269,6 +385,19 @@ void SentryManager::formatStatus(char* reply, size_t reply_len) const {
            _cfg.auth_secret[0] ? "on" : "off", _pending_switch ? " pending" : "");
 }
 
+void SentryManager::formatTokens(char* reply, size_t reply_len, int start) const {
+  if (start < 0) start = 0;
+  if (start >= _cfg.token_count) {
+    snprintf(reply, reply_len, "tokens %d/%u", start, (unsigned)_cfg.token_count);
+    return;
+  }
+  int used = snprintf(reply, reply_len, "tokens %d/%u", start, (unsigned)_cfg.token_count);
+  for (int i = start; i < _cfg.token_count && i < start + 4 && used < (int)reply_len - 4; i++) {
+    used += snprintf(reply + used, reply_len - used, " #%d:%c%s",
+                     i, _cfg.tokens[i].spent ? '-' : '+', _cfg.tokens[i].value);
+  }
+}
+
 void SentryManager::handleCommand(char* command, char* reply) {
   if (strcmp(command, "sentry status") == 0) {
     formatStatus(reply, 160);
@@ -289,28 +418,7 @@ void SentryManager::handleCommand(char* command, char* reply) {
   }
 
   if (memcmp(command, "set sentry.tokens ", 18) == 0) {
-    char* p = command + 18;
-    memset(_cfg.tokens, 0, sizeof(_cfg.tokens));
-    _cfg.token_count = 0;
-    while (*p && _cfg.token_count < SENTRY_MAX_TOKENS) {
-      while (*p == ' ') p++;
-      if (!*p) break;
-      char* start = p;
-      while (*p && *p != ' ') p++;
-      char old = *p;
-      *p = 0;
-      if (strlen(start) == 0 || strlen(start) >= SENTRY_MAX_TOKEN_LEN) {
-        strcpy(reply, "Err - bad token length");
-        return;
-      }
-      StrHelper::strzcpy(_cfg.tokens[_cfg.token_count].value, start, SENTRY_MAX_TOKEN_LEN);
-      _cfg.tokens[_cfg.token_count].spent = 0;
-      _cfg.token_count++;
-      if (old == 0) break;
-      *p++ = old;
-    }
-    save();
-    snprintf(reply, 160, "OK - %u tokens", (unsigned)_cfg.token_count);
+    replaceTokens(command + 18, reply);
     return;
   }
 
@@ -338,6 +446,108 @@ void SentryManager::handleCommand(char* command, char* reply) {
     _cfg.apply_delay_ms = (uint32_t)secs * 1000UL;
     save();
     strcpy(reply, "OK");
+    return;
+  }
+
+  if (strcmp(command, "sentry tokens clear") == 0) {
+    memset(_cfg.tokens, 0, sizeof(_cfg.tokens));
+    _cfg.token_count = 0;
+    save();
+    strcpy(reply, "OK - tokens cleared");
+    return;
+  }
+
+  if (memcmp(command, "sentry tokens add ", 18) == 0) {
+    char* p = command + 18;
+    int added = 0, skipped = 0;
+    char* tok;
+    while ((tok = sentryNextToken(p)) != NULL) {
+      if (addToken(tok)) added++; else skipped++;
+    }
+    if (added > 0) save();
+    snprintf(reply, 160, "OK - add=%d skip=%d", added, skipped);
+    return;
+  }
+
+  if (memcmp(command, "sentry tokens del ", 18) == 0) {
+    if (deleteToken(command + 18)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - token not found");
+    }
+    return;
+  }
+
+  if (memcmp(command, "sentry tokens rotate ", 21) == 0) {
+    rotateTokens(command + 21, reply);
+    return;
+  }
+
+  if (memcmp(command, "sentry import tokens ", 21) == 0) {
+    replaceTokens(command + 21, reply);
+    return;
+  }
+
+  if (memcmp(command, "sentry import channel ", 22) == 0) {
+    char* name = command + 22;
+    char* psk = strchr(name, ' ');
+    if (psk) *psk++ = 0;
+    if (configureChannel(name, psk)) {
+      save();
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - bad channel");
+    }
+    return;
+  }
+
+  if (memcmp(command, "sentry import delay ", 20) == 0) {
+    long secs = atol(command + 20);
+    if (secs < 5 || secs > 300) {
+      strcpy(reply, "Err - delay 5..300 sec");
+    } else {
+      _cfg.apply_delay_ms = (uint32_t)secs * 1000UL;
+      save();
+      strcpy(reply, "OK");
+    }
+    return;
+  }
+
+  if (memcmp(command, "sentry import auth ", 19) == 0) {
+    char tmp[80];
+    snprintf(tmp, sizeof(tmp), "set sentry.auth %s", command + 19);
+    StrHelper::strzcpy(command, tmp, strlen(tmp) + 1);
+    handleCommand(command, reply);
+    return;
+  }
+
+  if (memcmp(command, "sentry import preset ", 21) == 0) {
+    char tmp[120];
+    snprintf(tmp, sizeof(tmp), "set preset %s", command + 21);
+    StrHelper::strzcpy(command, tmp, strlen(tmp) + 1);
+    handleCommand(command, reply);
+    return;
+  }
+
+  if (strcmp(command, "sentry export config") == 0) {
+    snprintf(reply, 160, "sentry.v1 channel=%s delay=%lu active=%u auth=%s",
+             _cfg.channel, (unsigned long)(_cfg.apply_delay_ms / 1000UL),
+             (unsigned)_cfg.active_preset, _cfg.auth_secret[0] ? "on" : "off");
+    return;
+  }
+
+  if (strcmp(command, "sentry export presets") == 0) {
+    snprintf(reply, 160, "preset 1 %.3f %.1f %u %u; 2 %.3f %.1f %u %u; 3 %.3f %.1f %u %u",
+             _cfg.presets[0].freq, _cfg.presets[0].bw, _cfg.presets[0].sf, _cfg.presets[0].cr,
+             _cfg.presets[1].freq, _cfg.presets[1].bw, _cfg.presets[1].sf, _cfg.presets[1].cr,
+             _cfg.presets[2].freq, _cfg.presets[2].bw, _cfg.presets[2].sf, _cfg.presets[2].cr);
+    return;
+  }
+
+  if (memcmp(command, "sentry export tokens", 20) == 0) {
+    const char* p = command + 20;
+    while (*p == ' ') p++;
+    formatTokens(reply, 160, *p ? atoi(p) : 0);
     return;
   }
 

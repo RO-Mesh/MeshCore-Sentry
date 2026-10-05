@@ -51,9 +51,15 @@ class SentryManager {
   bool configureChannel(const char* name, const char* psk_hex = NULL);
   bool parseTrigger(const char* text, uint8_t& preset, char* token, size_t token_len,
                     char* sig, size_t sig_len) const;
+  int findToken(const char* token) const;
+  bool addToken(const char* token);
+  bool deleteToken(const char* token_or_index);
+  void replaceTokens(char* tokens, char* reply);
+  void rotateTokens(char* tokens, char* reply);
   bool burnToken(const char* token);
   bool authMatches(uint8_t preset, const char* token, const char* sig) const;
   bool channelMatches(const mesh::GroupChannel& channel) const;
+  void formatTokens(char* reply, size_t reply_len, int start) const;
 
 public:
   SentryManager();

@@ -5,6 +5,8 @@
 #include <helpers/TxtDataHelpers.h>
 #include "SentryManager.h"
 
+#include <string>
+
 static mesh::GroupChannel makeHashChannel(const char* name) {
   mesh::GroupChannel c;
   memset(&c, 0, sizeof(c));
@@ -81,4 +83,76 @@ TEST(SentryManager, WrongChannelDoesNotBurnToken) {
 
   mesh::GroupChannel right = makeHashChannel("#public");
   EXPECT_TRUE(s.handleGroupText(PAYLOAD_TYPE_GRP_TXT, right, payload, len, 2000));
+}
+
+TEST(SentryManager, RotatesSpentTokensAndPreservesLiveOnes) {
+  NativeFS fs;
+  SentryManager s;
+  s.begin(&fs);
+  EXPECT_EQ(cli(s, "sentry import tokens OLD1 KEEP1"), "OK - 2 tokens");
+
+  mesh::GroupChannel ch = makeHashChannel("#public");
+  uint8_t payload[120];
+  size_t len = makePayload(payload, "op: chk 1 OLD1");
+  EXPECT_TRUE(s.handleGroupText(PAYLOAD_TYPE_GRP_TXT, ch, payload, len, 1000));
+  s.clearPendingSwitch();
+
+  EXPECT_EQ(cli(s, "sentry tokens rotate NEW1 NEW2"), "OK - add=1 repl=1 skip=0");
+  std::string page = cli(s, "sentry export tokens 0");
+  EXPECT_NE(page.find("#0:+NEW1"), std::string::npos);
+  EXPECT_NE(page.find("#1:+KEEP1"), std::string::npos);
+  EXPECT_NE(page.find("#2:+NEW2"), std::string::npos);
+}
+
+TEST(SentryManager, BadTokenImportKeepsExistingTokens) {
+  NativeFS fs;
+  SentryManager s;
+  s.begin(&fs);
+  EXPECT_EQ(cli(s, "sentry import tokens KEEP1"), "OK - 1 tokens");
+  EXPECT_EQ(cli(s, "sentry import tokens NEW1 bad.token"), "Err - bad token");
+
+  std::string page = cli(s, "sentry export tokens 0");
+  EXPECT_NE(page.find("#0:+KEEP1"), std::string::npos);
+  EXPECT_EQ(page.find("NEW1"), std::string::npos);
+}
+
+TEST(SentryManager, ImportPresetChangesTriggeredProfile) {
+  NativeFS fs;
+  SentryManager s;
+  s.begin(&fs);
+  EXPECT_EQ(cli(s, "sentry import preset 2 869.700 125.0 10 5"), "OK");
+  EXPECT_EQ(cli(s, "sentry import tokens GO2"), "OK - 1 tokens");
+
+  mesh::GroupChannel ch = makeHashChannel("#public");
+  uint8_t payload[120];
+  size_t len = makePayload(payload, "op: chk 2 GO2");
+  EXPECT_TRUE(s.handleGroupText(PAYLOAD_TYPE_GRP_TXT, ch, payload, len, 1000));
+
+  SentryPreset preset;
+  ASSERT_TRUE(s.takePendingPreset(preset));
+  EXPECT_FLOAT_EQ(preset.freq, 869.700f);
+  EXPECT_FLOAT_EQ(preset.bw, 125.0f);
+  EXPECT_EQ(preset.sf, 10);
+  EXPECT_EQ(preset.cr, 5);
+}
+
+TEST(SentryManager, ExportsConfigAndPresets) {
+  NativeFS fs;
+  SentryManager s;
+  s.begin(&fs);
+  EXPECT_EQ(cli(s, "sentry import channel #admin-ops"), "OK");
+  EXPECT_EQ(cli(s, "sentry import delay 90"), "OK");
+
+  std::string config = cli(s, "sentry export config");
+  EXPECT_NE(config.find("channel=#admin-ops"), std::string::npos);
+  EXPECT_NE(config.find("delay=90"), std::string::npos);
+
+  std::string presets = cli(s, "sentry export presets");
+  EXPECT_NE(presets.find("preset 1"), std::string::npos);
+  EXPECT_NE(presets.find("869.525"), std::string::npos);
+}
+
+int main(int argc, char **argv) {
+  testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }
