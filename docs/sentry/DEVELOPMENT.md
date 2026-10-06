@@ -9,10 +9,13 @@ Current RO-Mesh Sentry release targets are:
 
 ```text
 ESP32: Heltec_v3_repeater
+ESP32: heltec_v4_repeater
+nRF52: Heltec_t096_repeater
+nRF52: RAK_3401_repeater
 nRF52: Xiao_nrf52_repeater
 ```
 
-Do not substitute RAK nRF targets unless the field hardware changes.
+Use `RAK_3401_repeater` for RAK10724 / WisMesh High Power Booster Starter Kit.
 
 ## Iteration Rules
 
@@ -32,6 +35,7 @@ Recommended tag format:
 sentry-v0.1.1
 sentry-v0.1.2
 sentry-v0.2.0
+sentry-r5-v0.1.1
 ```
 
 Use patch bumps for target, CLI, and behavior corrections. Use minor bumps
@@ -52,6 +56,9 @@ Then run release-path firmware builds:
 ```bash
 cd /Users/bisar/Codex/research/mesh/MeshCore-Sentry
 PATH=/tmp/meshcore-pio-venv/bin:$PATH FIRMWARE_VERSION=sentry-v0.1.N PLATFORMIO_BUILD_FLAGS=-DRO_MESH_SENTRY bash build.sh build-firmware Heltec_v3_repeater
+PATH=/tmp/meshcore-pio-venv/bin:$PATH FIRMWARE_VERSION=sentry-v0.1.N PLATFORMIO_BUILD_FLAGS=-DRO_MESH_SENTRY bash build.sh build-firmware heltec_v4_repeater
+PATH=/tmp/meshcore-pio-venv/bin:$PATH FIRMWARE_VERSION=sentry-v0.1.N PLATFORMIO_BUILD_FLAGS=-DRO_MESH_SENTRY bash build.sh build-firmware Heltec_t096_repeater
+PATH=/tmp/meshcore-pio-venv/bin:$PATH FIRMWARE_VERSION=sentry-v0.1.N PLATFORMIO_BUILD_FLAGS=-DRO_MESH_SENTRY bash build.sh build-firmware RAK_3401_repeater
 PATH=/tmp/meshcore-pio-venv/bin:$PATH FIRMWARE_VERSION=sentry-v0.1.N PLATFORMIO_BUILD_FLAGS=-DRO_MESH_SENTRY bash build.sh build-firmware Xiao_nrf52_repeater
 ```
 
@@ -60,6 +67,12 @@ Expected local artifacts:
 ```text
 Heltec_v3_repeater-...bin
 Heltec_v3_repeater-...-merged.bin
+heltec_v4_repeater-...bin
+heltec_v4_repeater-...-merged.bin
+Heltec_t096_repeater-...uf2
+Heltec_t096_repeater-...zip
+RAK_3401_repeater-...uf2
+RAK_3401_repeater-...zip
 Xiao_nrf52_repeater-...uf2
 Xiao_nrf52_repeater-...zip
 ```
@@ -69,8 +82,10 @@ ESP32 notes:
 - Use the non-merged `.bin` for normal app/OTA-style updates.
 - Use the `-merged.bin` for clean flash from offset `0x0`.
 
-nRF52 XIAO notes:
+nRF52 notes:
 
+- `RAK_3401_repeater` is the target for RAK10724 / WisMesh High Power Booster
+  Starter Kit.
 - Use `.zip` for DFU update tools.
 - Use `.uf2` for bootloader drag-and-drop when available.
 
@@ -79,15 +94,18 @@ nRF52 XIAO notes:
 After local verification:
 
 ```bash
-git push origin sentry/initial-module
-git tag -a sentry-v0.1.N -m "RO-Mesh Sentry Firmware v0.1.N"
-git push origin sentry-v0.1.N
+git push origin sentry/filter-v1.17.1-r5
+git tag -a sentry-r5-v0.1.N -m "RO-Mesh Sentry Firmware on Filter R5 v0.1.N"
+git push origin sentry-r5-v0.1.N
 ```
 
 The GitHub release workflow must publish only the current target matrix:
 
 ```text
 Heltec_v3_repeater
+heltec_v4_repeater
+Heltec_t096_repeater
+RAK_3401_repeater
 Xiao_nrf52_repeater
 ```
 
