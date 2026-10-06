@@ -46,6 +46,9 @@ available through the repeater CLI.
 
 → Full guide: **[SENTRY.md](./SENTRY.md)**
 
+→ Development loop and field-test report template:
+**[docs/sentry/DEVELOPMENT.md](./docs/sentry/DEVELOPMENT.md)**
+
 ## Why run this instead of stock repeater firmware?
 
 Stock repeaters forward everything they hear, until the battery dies. This
