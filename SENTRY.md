@@ -105,7 +105,22 @@ Current branch status:
 - Existing native guard suites still pass:
   `platformio test -e native_packet_filter` and
   `platformio test -e native_battery_gate`.
-- `platformio run -e RAK_3401_repeater` passes.
-- A temporary local env extending `RAK_3401_repeater` with
-  `-D RO_MESH_SENTRY` also passes, proving the Sentry hooks compile in firmware.
+- Release-path firmware builds pass with `RO_MESH_SENTRY` for
+  `Heltec_v3_repeater` and `Xiao_nrf52_repeater`.
 - No hardware/RF validation has been performed yet.
+
+## Development loop
+
+Development and field validation are tracked as small prerelease iterations.
+The current release targets are:
+
+```text
+ESP32: Heltec_v3_repeater
+nRF52: Xiao_nrf52_repeater
+```
+
+Use the development loop and field report template in
+[`docs/sentry/DEVELOPMENT.md`](docs/sentry/DEVELOPMENT.md) for every new
+Sentry iteration. Each report should include the tag, asset name, hardware,
+flash method, CLI snapshots, pass/fail test cases, logs/screenshots, and the
+requested next iteration.
