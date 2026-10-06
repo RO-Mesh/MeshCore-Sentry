@@ -23,8 +23,7 @@ jobs:
       matrix:
         target:
           - Heltec_v3_repeater
-          - RAK_3401_repeater
-          - RAK_4631_repeater
+          - Xiao_nrf52_repeater
     steps:
       - name: Clone Repo
         uses: actions/checkout@v6
@@ -65,7 +64,7 @@ jobs:
 
             Targets in this release:
             - ESP32: `Heltec_v3_repeater`
-            - nRF52: `RAK_3401_repeater`, `RAK_4631_repeater`
+            - nRF52: `Xiao_nrf52_repeater`
 
             Sentry is CLI-only: per-repeater tokens, optional per-repeater auth,
             delayed apply, token rotation, and import/export.
